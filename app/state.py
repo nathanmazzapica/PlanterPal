@@ -1,6 +1,7 @@
 from sensors.moisture import MoistureMonitor
 from sensors.light import LightMonitor
 from config import TEST_PLANT
+import json
 
 class State():
     def __init__(self, light_monitor: LightMonitor, moisture_monitor: MoistureMonitor, config=TEST_PLANT):
@@ -28,3 +29,16 @@ class State():
             self.plant_status = "DROWNING"
         else:
             self.plant_status = "hydrated :)"
+
+    def to_dict(self):
+        return {
+            "lux_seconds": self.lux_seconds,
+            "dli": self.dli,
+            "moisture": self.moisture,
+            "plant_status": self.plant_status,
+            "health_score": self.health_score,
+        }
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
+

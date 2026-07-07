@@ -6,6 +6,8 @@ from lib.pcf8574 import PCF8574
 from lib.hd44780 import HD44780
 from lib.lcd import LCD
 
+from web import client
+
 from display.display import Display
 from app.state import State
 from sensors import light, moisture
@@ -23,18 +25,40 @@ hd = HD44780(pcf, num_lines=2, num_columns=16)
 DISPLAY_LCD = LCD(hd, pcf)
 
 if __name__ == '__main__':
-    STATUS_LED.on()
     bh1750 = BH1750(SENSOR_BUS)
     ek1940 = EK1940(32)
     lm = light.LightMonitor(bh1750)
     mm = moisture.MoistureMonitor(ek1940)
-    test = Display(DISPLAY_LCD)
+    display = Display(DISPLAY_LCD)
     state = State(lm, mm)
 
+    try:
+        from web import wifi
+        DISPLAY_LCD.write_line("connecting wifi", 0)
+        wifi.connect_wifi()
+        DISPLAY_LCD.write_line("wifi connected", 0)
+    except:
+        raise
+
+    try:
+        DISPLAY_LCD.write_line("pinging server", 0)
+        code = client.ping()
+        DISPLAY_LCD.write_line(f"{code}", 0)
+        time.sleep(0.2)
+    except:
+        DISPLAY_LCD.write_line("failed to ping", 0)
+        raise
+
+    tick = 0
     while True:
         state.update()
-        test.render(state)
+        display.render(state)
         time.sleep(0.25)
+        tick += 1
+
+        if tick % 5:
+            # TODO: wrap in try
+            client.report(state)
 
 
 
