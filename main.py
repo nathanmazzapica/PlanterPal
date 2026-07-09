@@ -1,12 +1,14 @@
 from machine import Pin, I2C, ADC
 import time
+import sys
 from lib.bh1750 import BH1750
 from lib.ek1940 import EK1940
 from lib.pcf8574 import PCF8574
 from lib.hd44780 import HD44780
 from lib.lcd import LCD
 
-from web import client
+from web import client, wifi
+from web.exceptions import ErrNetwork
 
 from display.display import Display
 from app.state import State
@@ -38,6 +40,7 @@ if __name__ == '__main__':
         wifi.connect_wifi()
         DISPLAY_LCD.write_line("wifi connected", 0)
     except:
+        display.display_err("Failed to connect to WiFi", 1)
         raise
 
     try:
@@ -46,10 +49,11 @@ if __name__ == '__main__':
         DISPLAY_LCD.write_line(f"{code}", 0)
         time.sleep(0.2)
     except:
-        DISPLAY_LCD.write_line("failed to ping", 0)
+        display.display_err("Failed to reach API", 2)
         raise
 
     tick = 0
+    STATUS_LED.on()
     while True:
         state.update()
         display.render(state)
@@ -57,8 +61,10 @@ if __name__ == '__main__':
         tick += 1
 
         if tick % 5:
-            # TODO: wrap in try
-            client.report(state)
+            try:
+                client.report(state)
+            except ErrNetwork:
+                STATUS_LED.off()
 
 
 
