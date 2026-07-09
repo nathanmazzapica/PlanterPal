@@ -7,6 +7,7 @@ class LightMonitor():
         self._previous = None
 
         self.lux_seconds = 0 # rolling total of lux seconds over uptime
+        self.current_lux = 0 # Current instantaneous lux seen by the sensor
         self.dli = 0
 
 
@@ -31,6 +32,7 @@ class LightMonitor():
 
     def update(self):
         data = self._measure()
+        self.current_lux = data[1]
 
         if self._previous:
             self.lux_seconds += self._trapezoid_area(self._previous, data)

@@ -10,6 +10,7 @@ class State():
         self.CONFIG = config
 
         self.lux_seconds = 0
+        self.current_lux = 0
         self.dli = 0
         self.moisture = 0
 
@@ -20,6 +21,7 @@ class State():
         self.LIGHT_MONITOR.update()
         self.MOISTURE_MONITOR.update()
         self.lux_seconds = self.LIGHT_MONITOR.lux_seconds
+        self.current_lux = self.LIGHT_MONITOR.current_lux
         self.dli = self.LIGHT_MONITOR.dli
         self.moisture = self.MOISTURE_MONITOR.moisture_percent
 
@@ -32,6 +34,7 @@ class State():
 
     def to_dict(self):
         return {
+            "current_lux": self.current_lux,
             "lux_seconds": self.lux_seconds,
             "dli": self.dli,
             "moisture": self.moisture,
