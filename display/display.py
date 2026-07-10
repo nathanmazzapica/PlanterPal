@@ -1,6 +1,15 @@
+from machine import I2C
+from lib.pcf8574 import PCF8574
+from lib.hd44780 import HD44780
+from lib.lcd import LCD
+
+LCD_ADDR = 0x27
+
 class Display():
-    def __init__(self, LCD):
-        self.LCD = LCD
+    def __init__(self, bus: I2C):
+        pcf = PCF8574(bus, address=LCD_ADDR)
+        hd = HD44780(pcf, num_lines=2, num_columns=16)
+        self.LCD = LCD(hd, pcf)
         self.LCD.backlight_on()
 
     def _format_lux(self, lux):
@@ -25,6 +34,9 @@ class Display():
     
     def write(self, body):
         self.LCD.write_line(str(body), 0)
+
+    def write_line(self, body, line: int):
+        self.LCD.write_line(str(body), line)
 
     def display_err(self, desc: str, errno: int):
         self.LCD.write_line(f"Err[{str(errno)}]")
