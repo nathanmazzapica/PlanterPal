@@ -34,3 +34,7 @@ class Controller:
             # Solid green.
             self._ws2811.set_color(0, 255, 0)
             self._ws2811.on()
+        elif self._state == "error":
+            # Solid red.
+            self._ws2811.set_color(255, 0, 0)
+            self._ws2811.on()

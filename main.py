@@ -32,6 +32,7 @@ async def main():
         state_led.set_state("ready")
     except:
         display.display_err("Failed to connect to WiFi", 1)
+        state_led.set_state("error")
         raise
 
     try:
@@ -41,6 +42,7 @@ async def main():
         await asyncio.sleep(0.2)
     except:
         display.display_err("Failed to reach API", 2)
+        state_led.set_state("error")
         raise
 
     tick = 0
