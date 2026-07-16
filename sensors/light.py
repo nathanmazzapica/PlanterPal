@@ -19,7 +19,7 @@ class LightMonitor():
         lux = self._sensor.lux()
         return (time.ticks_ms(), lux)
 
-    def _calculate_dli(self):
+    def _estimate_dli(self):
         return self.lux_seconds / (54 * 1_000_000)
 
     def _trapezoid_area(self, a, b):
@@ -38,5 +38,5 @@ class LightMonitor():
             self.lux_seconds += self._trapezoid_area(self._previous, data)
 
         self._previous = data
-        self.dli = self._calculate_dli()
+        self.dli = self._estimate_dli()
 
