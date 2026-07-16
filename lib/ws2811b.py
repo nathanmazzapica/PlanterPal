@@ -59,21 +59,16 @@ class WS2811B:
         """Continuously fade the current color in and out.
 
         Runs until the task is cancelled. `period_ms` is the duration of one
-        full in-and-out cycle.
+        full in-and-out cycle. On cancellation the pixel is left as-is; the
+        caller is responsible for setting its resting state.
         """
-        was_on = self._is_on
         self._is_on = True
         step_s = period_ms / (2 * _FADE_STEPS) / 1000
-        try:
-            while True:
-                # Fade in, then out.
-                for i in range(_FADE_STEPS + 1):
-                    self._update(i / _FADE_STEPS)
-                    await asyncio.sleep(step_s)
-                for i in range(_FADE_STEPS, -1, -1):
-                    self._update(i / _FADE_STEPS)
-                    await asyncio.sleep(step_s)
-        finally:
-            # Restore the pixel to its pre-blink state on cancellation.
-            self._is_on = was_on
-            self._update()
+        while True:
+            # Fade in, then out.
+            for i in range(_FADE_STEPS + 1):
+                self._update(i / _FADE_STEPS)
+                await asyncio.sleep(step_s)
+            for i in range(_FADE_STEPS, -1, -1):
+                self._update(i / _FADE_STEPS)
+                await asyncio.sleep(step_s)
