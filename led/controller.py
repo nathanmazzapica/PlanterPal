@@ -28,13 +28,13 @@ class Controller:
 
         if self._state == "provisioning":
             # Fade in and out blue.
-            self._ws2811.set_color(0, 0, 255)
+            self._ws2811.set_color(0, 0, 25)
             self._task = asyncio.create_task(self._ws2811.blink())
         elif self._state == "ready":
             # Solid green.
-            self._ws2811.set_color(0, 255, 0)
+            self._ws2811.set_color(0, 25, 0)
             self._ws2811.on()
         elif self._state == "error":
             # Solid red.
-            self._ws2811.set_color(255, 0, 0)
+            self._ws2811.set_color(25, 0, 0)
             self._ws2811.on()
