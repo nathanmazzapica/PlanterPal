@@ -222,6 +222,86 @@ class AsyncArchitectureTests(unittest.TestCase):
             "Application._run_loop must await exactly one aggregate State update per cycle",
         )
 
+    def test_application_submits_serialized_state_to_reporter(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        run_loop = function_named(tree, "_run_loop")
+        submissions = [
+            node.value
+            for node in ast.walk(run_loop)
+            if isinstance(node, ast.Await)
+            and isinstance(node.value, ast.Call)
+            and qualified_name(node.value.func, symbols) == "self.reporter.submit"
+        ]
+
+        self.assertEqual(len(submissions), 1)
+        self.assertEqual(len(submissions[0].args), 1)
+        payload = submissions[0].args[0]
+        self.assertIsInstance(payload, ast.Call)
+        self.assertEqual(
+            qualified_name(payload.func, symbols),
+            "self.state.to_json",
+            "reporting must receive an immutable snapshot, not mutable State",
+        )
+
+    def test_reporting_cadence_condition_is_preserved(self):
+        run_loop = function_named(parse(MAIN_PATH), "_run_loop")
+        conditions = [
+            node.test
+            for node in ast.walk(run_loop)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.BinOp)
+            and isinstance(node.test.op, ast.Mod)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "tick"
+        ]
+
+        self.assertEqual(len(conditions), 1)
+        self.assertIsInstance(conditions[0].right, ast.Constant)
+        self.assertEqual(
+            conditions[0].right.value,
+            5,
+            "retain the existing `if tick % 5` reporting behavior",
+        )
+
+    def test_reporting_runs_as_one_application_owned_task(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        run = function_named(tree, "run")
+        reporter_tasks = []
+
+        for node in ast.walk(run):
+            if not isinstance(node, ast.Call):
+                continue
+            if qualified_name(node.func, symbols) != "asyncio.create_task":
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Call):
+                continue
+            if qualified_name(node.args[0].func, symbols) == "self.reporter.run":
+                reporter_tasks.append(node)
+
+        self.assertEqual(
+            len(reporter_tasks),
+            1,
+            "Application must own exactly one reporter task",
+        )
+
+    def test_application_supervises_reporter_failures(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        run_loop = function_named(tree, "_run_loop")
+        checks = [
+            node
+            for node in ast.walk(run_loop)
+            if isinstance(node, ast.Call)
+            and qualified_name(node.func, symbols) == "self.reporter.raise_if_failed"
+        ]
+
+        self.assertEqual(
+            len(checks),
+            1,
+            "unexpected reporter failures must remain visible to Application",
+        )
 
 if __name__ == "__main__":
     unittest.main()
