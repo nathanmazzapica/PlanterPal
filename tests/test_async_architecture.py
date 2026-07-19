@@ -9,6 +9,7 @@ LIGHT_PATH = PROJECT_ROOT / "sensors" / "light.py"
 STATE_PATH = PROJECT_ROOT / "app" / "state.py"
 MAIN_PATH = PROJECT_ROOT / "main.py"
 CONFIG_PATH = PROJECT_ROOT / "config.py"
+DISPLAY_PATH = PROJECT_ROOT / "display" / "display.py"
 
 
 def parse(path):
@@ -301,6 +302,183 @@ class AsyncArchitectureTests(unittest.TestCase):
             len(checks),
             1,
             "unexpected reporter failures must remain visible to Application",
+        )
+
+    def test_every_sensor_bus_owner_receives_the_same_composition_lock(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        create_application = function_named(tree, "create_application")
+        lock_bindings = set()
+
+        for node in create_application.body:
+            value = assigned_value(node)
+            name = assigned_name(node)
+            if name is None or not isinstance(value, ast.Call):
+                continue
+            if qualified_name(value.func, symbols) == "asyncio.Lock":
+                lock_bindings.add(name)
+
+        self.assertEqual(
+            len(lock_bindings),
+            1,
+            "cfg.SENSOR_BUS must have exactly one composition-owned lock",
+        )
+
+        injected = {}
+        for node in ast.walk(create_application):
+            if not isinstance(node, ast.Call):
+                continue
+            target = qualified_name(node.func, symbols)
+            if target not in {"lib.bh1750.BH1750", "display.display.Display"}:
+                continue
+            values = [*node.args, *(keyword.value for keyword in node.keywords)]
+            if not any(
+                qualified_name(value, symbols) == "config.SENSOR_BUS"
+                for value in values
+            ):
+                continue
+            injected[target] = {
+                value.id
+                for value in values
+                if isinstance(value, ast.Name) and value.id in lock_bindings
+            }
+
+        self.assertEqual(
+            injected,
+            {
+                "lib.bh1750.BH1750": lock_bindings,
+                "display.display.Display": lock_bindings,
+            },
+            "BH1750 and Display must receive the exact same bus-lock binding",
+        )
+
+    def test_application_awaits_all_display_submissions(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        application = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "Application"
+        )
+        display_methods = {"write", "write_line", "display_err", "render"}
+        calls = []
+        awaited = set()
+
+        for node in ast.walk(application):
+            if isinstance(node, ast.Call):
+                name = qualified_name(node.func, symbols)
+                if name and name.startswith("self.display."):
+                    if name.rsplit(".", 1)[-1] in display_methods:
+                        calls.append(node)
+            elif isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+                awaited.add(id(node.value))
+
+        self.assertTrue(calls)
+        self.assertEqual(
+            [call.lineno for call in calls if id(call) not in awaited],
+            [],
+            "Application must enqueue/await display work, never mutate LCD directly",
+        )
+
+    def test_display_render_receives_only_immutable_scalar_fields(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        run_loop = function_named(tree, "_run_loop")
+        calls = [
+            node
+            for node in ast.walk(run_loop)
+            if isinstance(node, ast.Call)
+            and qualified_name(node.func, symbols) == "self.display.render"
+        ]
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            [qualified_name(argument, symbols) for argument in calls[0].args],
+            [
+                "self.state.lux_seconds",
+                "self.state.moisture",
+                "self.state.dli",
+            ],
+            "mutable State must not cross into the display task",
+        )
+
+    def test_application_owns_and_supervises_one_display_task(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+        run = function_named(tree, "run")
+        run_loop = function_named(tree, "_run_loop")
+        display_tasks = []
+
+        for node in ast.walk(run):
+            if not isinstance(node, ast.Call):
+                continue
+            if qualified_name(node.func, symbols) != "asyncio.create_task":
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Call):
+                continue
+            if qualified_name(node.args[0].func, symbols) == "self.display.run":
+                display_tasks.append(node)
+
+        failure_checks = [
+            node
+            for node in ast.walk(run_loop)
+            if isinstance(node, ast.Call)
+            and qualified_name(node.func, symbols) == "self.display.raise_if_failed"
+        ]
+        self.assertEqual(len(display_tasks), 1)
+        self.assertEqual(len(failure_checks), 1)
+
+    def test_expected_cancellation_bypasses_display_error_marquee(self):
+        tree = parse(MAIN_PATH)
+        symbols = import_symbols(tree)
+
+        for function_name in ("_connect_wifi", "_ping_server"):
+            with self.subTest(function_name=function_name):
+                function = function_named(tree, function_name)
+                try_node = next(
+                    node for node in function.body if isinstance(node, ast.Try)
+                )
+                self.assertTrue(try_node.handlers)
+                self.assertEqual(
+                    qualified_name(try_node.handlers[0].type, symbols),
+                    "asyncio.CancelledError",
+                )
+                self.assertTrue(
+                    any(isinstance(node, ast.Raise) for node in try_node.handlers[0].body)
+                )
+
+    def test_low_level_lcd_is_private_to_display_owner(self):
+        main_tree = parse(MAIN_PATH)
+        display_tree = parse(DISPLAY_PATH)
+
+        main_imports = set(import_symbols(main_tree).values())
+        self.assertFalse(
+            main_imports.intersection(
+                {"lib.pcf8574.PCF8574", "lib.hd44780.HD44780", "lib.lcd.LCD"}
+            )
+        )
+
+        public_lcd_attributes = [
+            node
+            for node in ast.walk(display_tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr == "LCD"
+        ]
+        forbidden_marquee_calls = [
+            node
+            for node in ast.walk(display_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"marquee_text", "scroll_content_off_screen"}
+        ]
+
+        self.assertEqual(public_lcd_attributes, [])
+        self.assertEqual(
+            forbidden_marquee_calls,
+            [],
+            "Display must release the bus around its own cooperative marquee delay",
         )
 
 if __name__ == "__main__":
