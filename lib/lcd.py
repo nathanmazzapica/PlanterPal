@@ -1,6 +1,6 @@
 from hd44780 import HD44780
 from backlight_driver import BacklightDriver
-import utime
+import asyncio
 
 
 class LCD:
@@ -45,7 +45,7 @@ class LCD:
         """
         self.hd44780.set_cursor(line, 0)
 
-    def write_line(self, text: str, line: int = 0):
+    async def write_line(self, text: str, line: int = 0):
         """
         Write a string of text to a specific line on the LCD.
 
@@ -57,9 +57,9 @@ class LCD:
         :param line: The line number (0-based).
         """
         self.reset_cursor(line)
-        self.hd44780.write_string(text)
+        await self.hd44780.write_string(text)
 
-    def write_lines(self, text: str):
+    async def write_lines(self, text: str):
         """
         Write a string of text to the LCD, split into two lines.
 
@@ -76,16 +76,16 @@ class LCD:
         lines = text.split("\n", 1)
 
         # Write the first line to the LCD
-        self.write_line(lines[0], 0)
+        await self.write_line(lines[0], 0)
 
         # If there is a second line, write it to the LCD
         if len(lines) > 1:
-            self.write_line(lines[1], 1)
+            await self.write_line(lines[1], 1)
         else:
             # If there is no second line, clear the second line on the LCD
-            self.write_line("", 1)
+            await self.write_line("", 1)
 
-    def marquee_text(self, text: str, line: int = 0, delay: float = 0.2):
+    async def marquee_text(self, text: str, line: int = 0, delay: float = 0.2):
         """
         Display a line of text as a scrolling marquee on the LCD.
 
@@ -103,10 +103,10 @@ class LCD:
         # Write the visible portion of the text string to the display and update it
         for i in range(len(text) - self.hd44780.num_columns + 1):
             self.reset_cursor(line)
-            self.hd44780.write_string(text[i : i + self.hd44780.num_columns])
-            utime.sleep(delay)
+            await self.hd44780.write_string(text[i : i + self.hd44780.num_columns])
+            await asyncio.sleep(delay)
 
-    def scroll_content_off_screen(self, direction: str = "right", delay: float = 0.2):
+    async def scroll_content_off_screen(self, direction: str = "right", delay: float = 0.2):
         """
         Scroll the current display content off the LCD to the specified edge.
 
@@ -118,7 +118,7 @@ class LCD:
                 self.hd44780.move_left()
             else:
                 self.hd44780.move_right()
-            utime.sleep(delay)
+            await asyncio.sleep(delay)
 
     def display_on(self):
         """
