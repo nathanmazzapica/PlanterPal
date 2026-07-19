@@ -17,20 +17,27 @@ class State():
         self.plant_status = ""
         self.health_score = 0
 
-    def update(self):
-        self.LIGHT_MONITOR.update()
+    async def update(self):
+        await self.LIGHT_MONITOR.update()
         self.MOISTURE_MONITOR.update()
-        self.lux_seconds = self.LIGHT_MONITOR.lux_seconds
-        self.current_lux = self.LIGHT_MONITOR.current_lux
-        self.dli = self.LIGHT_MONITOR.dli
-        self.moisture = self.MOISTURE_MONITOR.moisture_percent
 
-        if self.moisture < self.CONFIG["min_moisture"]:
-            self.plant_status = "THIRSTY"
-        elif self.moisture > self.CONFIG["max_moisture"]:
-            self.plant_status = "DROWNING"
+        lux_seconds = self.LIGHT_MONITOR.lux_seconds
+        current_lux = self.LIGHT_MONITOR.current_lux
+        dli = self.LIGHT_MONITOR.dli
+        moisture = self.MOISTURE_MONITOR.moisture_percent
+
+        if moisture < self.CONFIG["min_moisture"]:
+            plant_status = "THIRSTY"
+        elif moisture > self.CONFIG["max_moisture"]:
+            plant_status = "DROWNING"
         else:
-            self.plant_status = "hydrated :)"
+            plant_status = "hydrated :)"
+
+        self.lux_seconds = lux_seconds
+        self.current_lux = current_lux
+        self.dli = dli
+        self.moisture = moisture
+        self.plant_status = plant_status
 
     def to_dict(self):
         return {
@@ -44,4 +51,3 @@ class State():
 
     def to_json(self):
         return json.dumps(self.to_dict())
-

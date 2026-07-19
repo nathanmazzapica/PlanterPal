@@ -64,7 +64,7 @@ class Application:
         cfg.STATUS_LED.on()
         while True:
             self.network_manager.raise_if_failed()
-            self.state.update()
+            await self.state.update()
             self.display.render(self.state)
             await asyncio.sleep(cfg.INTERVAL_S)
             tick += 1
@@ -91,7 +91,8 @@ class Application:
 
 def create_application():
     client = Client()
-    bh1750 = BH1750(cfg.SENSOR_BUS)
+    sensor_bus_lock = asyncio.Lock()
+    bh1750 = BH1750(cfg.SENSOR_BUS, sensor_bus_lock)
     ek1940 = EK1940(cfg.EK1940_PIN)
     lm = light.LightMonitor(bh1750)
     mm = moisture.MoistureMonitor(ek1940)
