@@ -18,6 +18,15 @@ async def wait_for_event(event):
     return "released"
 
 
+async def mark_scheduled(event):
+    event.set()
+
+
+async def wait_then_mark(wait_for, completed):
+    await wait_for.wait()
+    completed.set()
+
+
 async def cancellable_worker(started):
     try:
         started.set()
@@ -79,6 +88,32 @@ async def main():
     result = await waiter
     assert result == "released"
     print("PASS: Event wakes a waiting task")
+
+    print("Testing Event clear...")
+
+    event.set()
+    event.clear()
+    completed = asyncio.Event()
+    waiter = asyncio.create_task(wait_then_mark(event, completed))
+    await asyncio.sleep_ms(20)
+
+    assert not completed.is_set()
+    event.set()
+    await waiter
+
+    assert completed.is_set()
+    print("PASS: cleared Event blocks until it is set again")
+
+    print("Testing zero-delay cooperative yield...")
+
+    scheduled = asyncio.Event()
+    task = asyncio.create_task(mark_scheduled(scheduled))
+    assert not scheduled.is_set()
+    await asyncio.sleep_ms(0)
+
+    assert scheduled.is_set()
+    await task
+    print("PASS: sleep_ms(0) yields to another ready task")
 
     print("Testing task result...")
 
