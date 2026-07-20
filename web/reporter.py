@@ -1,6 +1,6 @@
 import asyncio
 
-from web.exceptions import ErrNetwork
+from web.exceptions import ErrHttpStatus, ErrNetwork
 
 
 class Reporter:
@@ -41,9 +41,12 @@ class Reporter:
                 try:
                     await self._client.report(payload)
                 except ErrNetwork as error:
-                    print("Report delivery failed; dropping payload:", error)
-                    if self._on_network_error is not None:
-                        self._on_network_error()
+                    if isinstance(error, ErrHttpStatus):
+                        print("Report rejected; dropping payload:", error)
+                    else:
+                        print("Report delivery failed; dropping payload:", error)
+                        if self._on_network_error is not None:
+                            self._on_network_error()
 
                     # Failed reports are intentionally not retried for now.
                     # Readings accumulate, so a later payload generally

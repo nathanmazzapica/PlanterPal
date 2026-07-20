@@ -17,3 +17,7 @@ INTERVAL_S = _TICKRATE / 60
 # Backend configuration is not a Wi-Fi credential and must be available even
 # on a factory-fresh device that has not been provisioned yet.
 API_HOST = "api.com"
+
+# One monotonic deadline covers each complete HTTP transaction, including
+# connection establishment, request drain, response headers, and shutdown.
+HTTP_REQUEST_TIMEOUT_S = 10

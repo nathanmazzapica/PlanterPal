@@ -61,6 +61,7 @@ class Application:
             self._network_task = asyncio.create_task(self.network_manager.run())
             await self._connect_wifi()
             await self._ping_server()
+            self.state_led.set_state("ready")
             self._reporter_task = asyncio.create_task(self.reporter.run())
             self._mode = "running"
             await self._run_loop()
@@ -114,7 +115,6 @@ class Application:
             await self.display.write_line("connecting wifi", 0)
             await self.network_manager.wait_until_connected()
             await self.display.write_line("wifi connected", 0)
-            self.state_led.set_state("ready")
         except asyncio.CancelledError:
             raise
         except Exception:
