@@ -3,7 +3,9 @@ import config as cfg
 import device_hardware as hardware
 
 from app.state import State
-from display.display import Display
+from display.display import Display, LCD_ADDR
+from display.null_display import NullDisplay
+from display.probe import LCDPresenceProbe
 from led.controller import Controller
 from lib.async_channel import SingleValueChannel
 from lib.bh1750 import BH1750
@@ -22,12 +24,24 @@ class Application:
     a smaller import graph and resets the machine before this module is loaded.
     """
 
-    def __init__(self, reporter, display, state, state_led, network_manager):
+    def __init__(
+        self,
+        reporter,
+        display,
+        state,
+        state_led,
+        network_manager,
+        display_probe,
+        null_display_factory,
+    ):
         self.reporter = reporter
+        self._configured_display = display
         self.display = display
         self.state = state
         self.state_led = state_led
         self.network_manager = network_manager
+        self._display_probe = display_probe
+        self._null_display_factory = null_display_factory
 
         self._network_task = None
         self._reporter_task = None
@@ -40,10 +54,9 @@ class Application:
 
     async def run(self):
         self._mode = "starting"
-        self._display_task = asyncio.create_task(self.display.run())
 
         try:
-            await self.display.wait_until_ready()
+            await self._start_display()
             self._mode = "connecting"
             self._network_task = asyncio.create_task(self.network_manager.run())
             await self._connect_wifi()
@@ -69,6 +82,31 @@ class Application:
                                 hardware.STATUS_LED.off()
                             finally:
                                 self._mode = "stopped"
+
+    async def _start_display(self):
+        self.display = self._configured_display
+
+        if not await self._display_probe.is_present():
+            print("LCD not detected; continuing headless")
+            await self._activate_display(self._null_display_factory())
+            return
+
+        try:
+            await self._activate_display(self._configured_display)
+        except asyncio.CancelledError:
+            raise
+        except OSError as error:
+            await self._stop_display()
+            print("LCD unavailable; continuing headless:", error)
+            await self._activate_display(self._null_display_factory())
+
+    async def _activate_display(self, display):
+        if self._display_task is not None:
+            raise RuntimeError("a display task is already active")
+
+        self.display = display
+        self._display_task = self._create_task(self.display.run())
+        await self.display.wait_until_ready()
 
     async def _connect_wifi(self):
         try:
@@ -162,6 +200,16 @@ class Application:
         if callable(stop):
             await stop()
 
+    @staticmethod
+    def _create_task(coroutine):
+        try:
+            return asyncio.create_task(coroutine)
+        except BaseException:
+            close = getattr(coroutine, "close", None)
+            if callable(close):
+                close()
+            raise
+
 
 def create_application(credentials):
     """Compose the running graph from already-validated credentials."""
@@ -179,11 +227,24 @@ def create_application(credentials):
     mm = moisture.MoistureMonitor(ek1940)
     display_channel = SingleValueChannel()
     display = Display(hardware.SENSOR_BUS, sensor_bus_lock, display_channel)
+    display_probe = LCDPresenceProbe(
+        hardware.SENSOR_BUS,
+        sensor_bus_lock,
+        LCD_ADDR,
+    )
     state = State(lm, mm)
     state_led = Controller(WS2811B(21))
     network_manager = NetworkManager(credentials=credentials)
 
-    return Application(reporter, display, state, state_led, network_manager)
+    return Application(
+        reporter,
+        display,
+        state,
+        state_led,
+        network_manager,
+        display_probe,
+        NullDisplay,
+    )
 
 
 def _backend_host():
