@@ -25,6 +25,8 @@ FORBIDDEN_RUNNING_MODULES = (
     "app.state",
     "device_hardware",
     "display.display",
+    "display.null_display",
+    "display.probe",
     "led.controller",
     "sensors.light",
     "sensors.moisture",

@@ -37,6 +37,8 @@ def import_application_module():
         "web.wifi",
         "web.wifi_config",
         "display.display",
+        "display.null_display",
+        "display.probe",
         "app.provisioning",
         "app.state",
         "sensors",
@@ -66,6 +68,8 @@ def import_application_module():
         "web.reporter": ("Reporter", object),
         "web.wifi": ("NetworkManager", object),
         "display.display": ("Display", object),
+        "display.null_display": ("NullDisplay", object),
+        "display.probe": ("LCDPresenceProbe", object),
         "app.provisioning": ("ProvisioningCoordinator", object),
         "app.state": ("State", object),
     }
@@ -73,6 +77,8 @@ def import_application_module():
         module = types.ModuleType(module_name)
         setattr(module, symbol, value)
         sys.modules[module_name] = module
+
+    sys.modules["display.display"].LCD_ADDR = 0x27
 
     wifi_config = types.ModuleType("web.wifi_config")
     wifi_config.cfg = {"ssid": "test", "pw": "test"}
@@ -103,21 +109,45 @@ application_module = import_application_module()
 
 
 class FakeDisplay:
-    def __init__(self, cleanup_order):
+    def __init__(
+        self,
+        cleanup_order,
+        label="display",
+        initialization_error=None,
+        block_initialization=False,
+        render_error=None,
+    ):
         self.cleanup_order = cleanup_order
+        self.label = label
+        self.initialization_error = initialization_error
+        self.block_initialization = block_initialization
+        self.render_error = render_error
         self.ready = asyncio.Event()
+        self.started = asyncio.Event()
+        self.release_initialization = asyncio.Event()
         self.calls = []
         self.rendered = asyncio.Event()
+        self.run_calls = 0
 
     async def run(self):
-        self.ready.set()
+        self.run_calls += 1
+        self.started.set()
         try:
+            if self.block_initialization:
+                await self.release_initialization.wait()
+            if self.initialization_error is not None:
+                return
+
+            self.ready.set()
             while True:
                 await asyncio.sleep(1)
         finally:
-            self.cleanup_order.append("display")
+            self.cleanup_order.append(self.label)
 
     async def wait_until_ready(self):
+        await self.started.wait()
+        if self.initialization_error is not None:
+            raise self.initialization_error
         await self.ready.wait()
 
     async def write_line(self, body, line):
@@ -127,6 +157,8 @@ class FakeDisplay:
         self.calls.append(("error", desc, error_number))
 
     async def render(self, lux_seconds, moisture, dli):
+        if self.render_error is not None:
+            raise self.render_error
         self.calls.append(("render", lux_seconds, moisture, dli))
         self.rendered.set()
 
@@ -192,9 +224,10 @@ class FakeState:
         self.lux_seconds = 10
         self.moisture = 50
         self.dli = 0.25
+        self.updated = asyncio.Event()
 
     async def update(self):
-        pass
+        self.updated.set()
 
     def to_json(self):
         return "{}"
@@ -212,10 +245,55 @@ class FakeStateLed:
         self.stop_calls += 1
 
 
+class FakeDisplayProbe:
+    def __init__(self, outcome=True, blocked=False):
+        self.outcome = outcome
+        self.blocked = blocked
+        self.calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def is_present(self):
+        self.calls += 1
+        self.started.set()
+        if self.blocked:
+            await self.release.wait()
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+class FakeNullDisplayFactory:
+    def __init__(self, cleanup_order):
+        self.cleanup_order = cleanup_order
+        self.instances = []
+
+    def __call__(self):
+        display = FakeDisplay(self.cleanup_order, label="null")
+        self.instances.append(display)
+        return display
+
+
 class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
-    def application(self, connected=False, block_ping=False, connection_error=None):
+    def application(
+        self,
+        connected=False,
+        block_ping=False,
+        connection_error=None,
+        display_present=True,
+        probe_error=None,
+        block_probe=False,
+        display_error=None,
+        block_display_initialization=False,
+        render_error=None,
+    ):
         cleanup_order = []
-        display = FakeDisplay(cleanup_order)
+        display = FakeDisplay(
+            cleanup_order,
+            initialization_error=display_error,
+            block_initialization=block_display_initialization,
+            render_error=render_error,
+        )
         reporter = FakeReporter(cleanup_order, block_ping=block_ping)
         network = FakeNetworkManager(
             cleanup_order,
@@ -223,12 +301,19 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
             connection_error=connection_error,
         )
         led = FakeStateLed()
+        probe = FakeDisplayProbe(
+            outcome=probe_error if probe_error is not None else display_present,
+            blocked=block_probe,
+        )
+        null_display_factory = FakeNullDisplayFactory(cleanup_order)
         application = application_module.Application(
             reporter,
             display,
             FakeState(),
             led,
             network,
+            probe,
+            null_display_factory,
         )
         return application, display, reporter, network, led, cleanup_order
 
@@ -251,6 +336,112 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app._display_task)
         self.assertIsNone(app._network_task)
         self.assertIsNone(app._reporter_task)
+
+    async def test_present_lcd_retains_configured_display(self):
+        app, display, _, network, _, _ = self.application()
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(network.waiting.wait(), timeout=0.25)
+
+        self.assertIs(app.display, display)
+        self.assertEqual(app._display_probe.calls, 1)
+        self.assertEqual(display.run_calls, 1)
+        self.assertEqual(app._null_display_factory.instances, [])
+
+        await self.cancel_application(task)
+
+    async def test_absent_lcd_selects_null_without_starting_real_display(self):
+        app, display, _, _, _, cleanup_order = self.application(
+            connected=True,
+            display_present=False,
+        )
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(app.state.updated.wait(), timeout=0.25)
+
+        self.assertEqual(app._display_probe.calls, 1)
+        self.assertEqual(display.run_calls, 0)
+        self.assertEqual(len(app._null_display_factory.instances), 1)
+        self.assertIs(app.display, app._null_display_factory.instances[0])
+
+        await self.cancel_application(task)
+        self.assertEqual(cleanup_order, ["reporter", "null", "network"])
+
+    async def test_lcd_initialization_oserror_settles_real_then_selects_null(self):
+        app, display, _, _, _, cleanup_order = self.application(
+            connected=True,
+            display_error=OSError(116),
+        )
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(app.state.updated.wait(), timeout=0.25)
+
+        self.assertEqual(display.run_calls, 1)
+        self.assertEqual(cleanup_order, ["display"])
+        self.assertEqual(len(app._null_display_factory.instances), 1)
+        self.assertIs(app.display, app._null_display_factory.instances[0])
+
+        await self.cancel_application(task)
+        self.assertEqual(
+            cleanup_order,
+            ["display", "reporter", "null", "network"],
+        )
+
+    async def test_probe_oserror_is_fatal_and_does_not_select_null(self):
+        app, display, _, _, _, cleanup_order = self.application(
+            probe_error=OSError(116),
+        )
+
+        with self.assertRaises(OSError):
+            await app.run()
+
+        self.assertEqual(display.run_calls, 0)
+        self.assertEqual(app._null_display_factory.instances, [])
+        self.assertEqual(cleanup_order, [])
+
+    async def test_unexpected_initialization_error_remains_fatal(self):
+        app, display, _, _, _, cleanup_order = self.application(
+            display_error=ValueError("broken display contract"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "broken display contract"):
+            await app.run()
+
+        self.assertEqual(display.run_calls, 1)
+        self.assertEqual(app._null_display_factory.instances, [])
+        self.assertEqual(cleanup_order, ["display"])
+
+    async def test_cancellation_during_probe_does_not_start_a_display(self):
+        app, display, _, _, _, cleanup_order = self.application(block_probe=True)
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(app._display_probe.started.wait(), timeout=0.25)
+
+        await self.cancel_application(task)
+
+        self.assertEqual(display.run_calls, 0)
+        self.assertEqual(app._null_display_factory.instances, [])
+        self.assertEqual(cleanup_order, [])
+
+    async def test_cancellation_during_real_initialization_does_not_fallback(self):
+        app, display, _, _, _, cleanup_order = self.application(
+            block_display_initialization=True,
+        )
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(display.started.wait(), timeout=0.25)
+
+        await self.cancel_application(task)
+
+        self.assertEqual(app._null_display_factory.instances, [])
+        self.assertEqual(cleanup_order, ["display"])
+
+    async def test_oserror_after_readiness_remains_fatal(self):
+        app, _, _, _, _, cleanup_order = self.application(
+            connected=True,
+            render_error=OSError(116),
+        )
+
+        with self.assertRaises(OSError):
+            await app.run()
+
+        self.assertEqual(app._null_display_factory.instances, [])
+        self.assertEqual(cleanup_order, ["display", "network"])
 
     async def test_cancellation_while_pinging_does_not_render_error(self):
         app, display, reporter, _, led, cleanup_order = self.application(

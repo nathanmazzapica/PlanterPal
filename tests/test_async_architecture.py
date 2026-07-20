@@ -11,6 +11,8 @@ APPLICATION_PATH = PROJECT_ROOT / "app" / "application.py"
 CONFIG_PATH = PROJECT_ROOT / "config.py"
 DEVICE_HARDWARE_PATH = PROJECT_ROOT / "device_hardware.py"
 DISPLAY_PATH = PROJECT_ROOT / "display" / "display.py"
+NULL_DISPLAY_PATH = PROJECT_ROOT / "display" / "null_display.py"
+DISPLAY_PROBE_PATH = PROJECT_ROOT / "display" / "probe.py"
 
 
 def parse(path):
@@ -330,7 +332,11 @@ class AsyncArchitectureTests(unittest.TestCase):
             if not isinstance(node, ast.Call):
                 continue
             target = qualified_name(node.func, symbols)
-            if target not in {"lib.bh1750.BH1750", "display.display.Display"}:
+            if target not in {
+                "lib.bh1750.BH1750",
+                "display.display.Display",
+                "display.probe.LCDPresenceProbe",
+            }:
                 continue
             values = [*node.args, *(keyword.value for keyword in node.keywords)]
             if not any(
@@ -349,9 +355,36 @@ class AsyncArchitectureTests(unittest.TestCase):
             {
                 "lib.bh1750.BH1750": lock_bindings,
                 "display.display.Display": lock_bindings,
+                "display.probe.LCDPresenceProbe": lock_bindings,
             },
-            "BH1750 and Display must receive the exact same bus-lock binding",
+            "BH1750, Display, and its presence probe must share one bus lock",
         )
+
+    def test_null_display_has_no_hardware_or_i2c_dependency(self):
+        tree = parse(NULL_DISPLAY_PATH)
+        imports = set(import_symbols(tree).values())
+        self.assertFalse(
+            imports.intersection(
+                {
+                    "machine",
+                    "device_hardware",
+                    "display.display",
+                    "lib.pcf8574",
+                    "lib.hd44780",
+                    "lib.lcd",
+                }
+            )
+        )
+
+        bus_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {"scan", "writeto", "readfrom", "readfrom_into", "writevto"}
+        ]
+        self.assertEqual(bus_calls, [])
 
     def test_config_is_side_effect_free_and_hardware_builds_running_devices(self):
         config_tree = parse(CONFIG_PATH)
@@ -428,14 +461,14 @@ class AsyncArchitectureTests(unittest.TestCase):
     def test_application_owns_and_supervises_one_display_task(self):
         tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
-        run = function_named(tree, "run")
+        activate_display = function_named(tree, "_activate_display")
         run_loop = function_named(tree, "_run_loop")
         display_tasks = []
 
-        for node in ast.walk(run):
+        for node in ast.walk(activate_display):
             if not isinstance(node, ast.Call):
                 continue
-            if qualified_name(node.func, symbols) != "asyncio.create_task":
+            if qualified_name(node.func, symbols) != "self._create_task":
                 continue
             if not node.args or not isinstance(node.args[0], ast.Call):
                 continue
