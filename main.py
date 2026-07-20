@@ -1,64 +1,36 @@
 import asyncio
-import config as cfg
-from lib.bh1750 import BH1750
-from lib.ek1940 import EK1940
-from lib.ws2811b import WS2811B
-from led.controller import Controller
 
-from web import  wifi
-from web.client import Client
-from web.exceptions import ErrNetwork
-
-from display.display import Display
-from app.state import State
-from sensors import light, moisture
+from web.credentials import CredentialStore
 
 
-async def main():
-    client = Client()
-    bh1750 = BH1750(cfg.SENSOR_BUS)
-    ek1940 = EK1940(cfg.EK1940_PIN)
-    lm = light.LightMonitor(bh1750)
-    mm = moisture.MoistureMonitor(ek1940)
-    display = Display(cfg.SENSOR_BUS)
-    state = State(lm, mm)
-    state_led = Controller(WS2811B(21))
-    state_led.set_state("provisioning")
-
-    try:
-        display.write_line("connecting wifi", 0)
-        await wifi.connect_wifi()
-        display.write_line("wifi connected", 0)
-        state_led.set_state("ready")
-    except:
-        display.display_err("Failed to connect to WiFi", 1)
-        state_led.set_state("error")
-        raise
-
-    try:
-        display.write_line("pinging server", 0)
-        code = client.ping()
-        display.write_line(f"{code}", 0)
-        await asyncio.sleep(0.2)
-    except:
-        display.display_err("Failed to reach API", 2)
-        state_led.set_state("error")
-        raise
-
-    tick = 0
-    cfg.STATUS_LED.on()
-    while True:
-        state.update()
-        display.render(state)
-        await asyncio.sleep(cfg.INTERVAL_S)
-        tick += 1
-
-        if tick % 5:
-            try:
-                client.report(state)
-            except ErrNetwork:
-                cfg.STATUS_LED.off()
+RECOVERY_PERIOD_S = 5
 
 
-if __name__ == '__main__':
+async def main(recovery_sleep=asyncio.sleep):
+    # The CP2102 can reset the ESP32 when a host opens the serial port. Give
+    # recovery tools a deterministic, cooperative window in which to deliver
+    # KeyboardInterrupt before NVS, BLE, hardware, or application state starts.
+    await recovery_sleep(RECOVERY_PERIOD_S)
+
+    credential_store = CredentialStore()
+    credentials = credential_store.load()
+
+    if credentials is None:
+        # This import boundary is deliberate. A factory-fresh boot must not
+        # allocate the display, sensors, application state, HTTP client, or
+        # their hardware dependencies before NimBLE has reserved its heap.
+        from app.provisioning_runtime import run_provisioning
+
+        await run_provisioning(credential_store)
+        return
+
+    # BLE and provisioning modules are never imported on a credentialed boot.
+    # The running application owns reconnects for these persisted credentials.
+    from app.application import create_application
+
+    application = create_application(credentials)
+    await application.run()
+
+
+if __name__ == "__main__":
     asyncio.run(main())

@@ -1,18 +1,23 @@
-from machine import Pin, I2C
 TEST_PLANT = {
     "min_moisture": 30,
     "max_moisture": 85,
 }
 
-STATUS_LED = Pin(2, Pin.OUT)
-SCL = Pin(27) # white
-SDA = Pin(26) # purple
-
-SENSOR_BUS = I2C(0, scl=SCL, sda=SDA, freq=100_000)
+STATUS_LED_PIN = 2
+SCL_PIN = 27  # white
+SDA_PIN = 26  # purple
+SENSOR_BUS_ID = 0
+SENSOR_BUS_FREQ = 100_000
 
 EK1940_PIN = 32
 
 _TICKRATE = 120
 INTERVAL_S = _TICKRATE / 60
 
-OUTBOX_LEN = 50
+# Backend configuration is not a Wi-Fi credential and must be available even
+# on a factory-fresh device that has not been provisioned yet.
+API_HOST = "api.com"
+
+# One monotonic deadline covers each complete HTTP transaction, including
+# connection establishment, request drain, response headers, and shutdown.
+HTTP_REQUEST_TIMEOUT_S = 10

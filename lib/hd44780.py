@@ -1,4 +1,5 @@
 import utime
+import asyncio
 from hd44780_4bit_driver import HD447804BitDriver
 from hd44780_4bit_payload import HD447804BitPayload
 
@@ -57,9 +58,7 @@ class HD44780:
         self.display_control = self.LCD_DISPLAY_CTRL | self.LCD_ON_DISPLAY
         self.entry_mode_set = self.LCD_ENTRY_MODE | self.LCD_ENTRY_INC
 
-        self._initialize()
-
-    def _initialize(self):
+    async def initialize(self):
         """
         Initialize the LCD in 4-bit mode and clear the display.
 
@@ -79,14 +78,14 @@ class HD44780:
         the worst-case times for each command.
         """
         # Wait for more than 40ms after power rises above 2.7V
-        utime.sleep_ms(50)
+        await asyncio.sleep_ms(50)
 
         # Switch to 8-bit mode.
         # This is the first step of the initialization sequence.
         self._write_nibble(0x03)
         # The execution time for this command is longer during initialization,
         # so we wait for more than 4.1ms.
-        utime.sleep_ms(5)
+        await asyncio.sleep_ms(5)
 
         # Repeat the function set command in 8-bit mode.
         self._write_nibble(0x03)
@@ -97,13 +96,13 @@ class HD44780:
         # Repeat the function set command in 8-bit mode one more time.
         self._write_nibble(0x03)
         # We can use a shorter delay here.
-        utime.sleep_ms(1)
+        await asyncio.sleep_ms(1)
 
         # Switch to 4-bit mode.
         # This is the second step of the initialization sequence.
         self._write_nibble(0x02)
         # We can use a shorter delay here.
-        utime.sleep_ms(1)
+        await asyncio.sleep_ms(1)
 
         # Now that we're in 4-bit mode, we can set the number of display lines and
         # character font size with the function set command.
@@ -113,7 +112,7 @@ class HD44780:
             self.LCD_FUNCTION_SET | (self.LCD_2_LINE if self.num_lines > 1 else 0x00)
         )
         # We can use a shorter delay here.
-        utime.sleep_ms(1)
+        await asyncio.sleep_ms(1)
 
         # Set the display control flags.
         # This command sets the display on/off, cursor on/off, and cursor blink on/off flags.
@@ -182,6 +181,9 @@ class HD44780:
         payload_low = HD447804BitPayload(e=0, rs=rs, rw=0, data=low_nibble)
         self.driver.write(payload_low)
 
+        # The controller requires a sub-millisecond settling delay. Keeping
+        # this bounded hardware delay avoids stretching every byte to the
+        # scheduler's millisecond resolution.
         utime.sleep_us(50)  # data needs > 37us to settle
 
     def _write_command(self, cmd: int):
@@ -215,7 +217,7 @@ class HD44780:
         """
         self._write_data(ord(char))
 
-    def write_string(self, text: str):
+    async def write_string(self, text: str):
         """
         Write a string of text to the LCD at the current cursor position.
 
@@ -230,6 +232,10 @@ class HD44780:
                 self.write_char(text[i])
             else:
                 self.write_char(" ")
+
+            # A character is a safe cancellation boundary: both nibbles have
+            # completed and the enable line is low.
+            await asyncio.sleep_ms(0)
 
     def set_cursor(self, line: int, column: int):
         """

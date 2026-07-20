@@ -11,12 +11,12 @@ class LightMonitor():
         self.dli = 0
 
 
-    def _measure(self):
+    async def _measure(self):
         """
            Gets the current lux and returns the point
            (time_ms, lux)
         """
-        lux = self._sensor.lux()
+        lux = await self._sensor.lux()
         return (time.ticks_ms(), lux)
 
     def _estimate_dli(self):
@@ -30,13 +30,16 @@ class LightMonitor():
 
         return interval_s * (h1 + h2) / 2
 
-    def update(self):
-        data = self._measure()
-        self.current_lux = data[1]
+    async def update(self):
+        data = await self._measure()
+        lux_seconds = self.lux_seconds
 
         if self._previous:
-            self.lux_seconds += self._trapezoid_area(self._previous, data)
+            lux_seconds += self._trapezoid_area(self._previous, data)
 
+        dli = lux_seconds / (54 * 1_000_000)
+
+        self.current_lux = data[1]
+        self.lux_seconds = lux_seconds
         self._previous = data
-        self.dli = self._estimate_dli()
-
+        self.dli = dli

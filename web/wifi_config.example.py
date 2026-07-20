@@ -1,5 +1,3 @@
 cfg = {
-        "ssid" : "WiFiName",
-        "pw" : "SecurePassword",
-        "host" : "api.com"
+    "host": "api.com",
 }
