@@ -1,12 +1,24 @@
 import asyncio
 import errno
-from web.wifi_config import cfg
 from web.exceptions import ErrNetwork, ErrHostUnreachable, ErrTimedOut, ErrConnectionReset
+
+
+def _legacy_configured_host():
+    """Read only the backend host from the pre-provisioning config format."""
+
+    try:
+        from web.wifi_config import cfg
+    except ImportError:
+        return None
+
+    return cfg.get("host")
 
 
 class Client():
     def __init__(self, host=None, open_connection=None):
-        self.host = host if host is not None else cfg['host']
+        self.host = host if host is not None else _legacy_configured_host()
+        if not isinstance(self.host, str) or not self.host:
+            raise RuntimeError("backend host is not configured")
         self._open_connection = (
             open_connection
             if open_connection is not None

@@ -20,6 +20,26 @@ class Controller:
         self._state = state
         self._apply()
 
+    async def stop(self):
+        """Stop the owned animation and leave the NeoPixel off."""
+
+        task = self._task
+        if task is None and self._state is None:
+            return
+
+        self._task = None
+        self._state = None
+
+        try:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            self._ws2811.off()
+
     def _apply(self):
         # Stop any running animation before switching states.
         if self._task is not None:
@@ -29,6 +49,10 @@ class Controller:
         if self._state == "provisioning":
             # Fade in and out blue.
             self._ws2811.set_color(0, 0, 25)
+            self._task = asyncio.create_task(self._ws2811.blink())
+        elif self._state == "connecting":
+            # Fade in and out cyan while Wi-Fi is connecting.
+            self._ws2811.set_color(0, 25, 25)
             self._task = asyncio.create_task(self._ws2811.blink())
         elif self._state == "ready":
             # Solid green.
