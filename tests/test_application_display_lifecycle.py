@@ -194,15 +194,18 @@ class FakeNetworkManager:
 
 
 class FakeReporter:
-    def __init__(self, cleanup_order, block_ping=False):
+    def __init__(self, cleanup_order, block_ping=False, ping_error=None):
         self.cleanup_order = cleanup_order
         self.block_ping = block_ping
+        self.ping_error = ping_error
         self.pinging = asyncio.Event()
 
     async def ping(self):
         self.pinging.set()
         if self.block_ping:
             await asyncio.Event().wait()
+        if self.ping_error is not None:
+            raise self.ping_error
         return 204
 
     async def run(self):
@@ -279,6 +282,7 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self,
         connected=False,
         block_ping=False,
+        ping_error=None,
         connection_error=None,
         display_present=True,
         probe_error=None,
@@ -294,7 +298,11 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
             block_initialization=block_display_initialization,
             render_error=render_error,
         )
-        reporter = FakeReporter(cleanup_order, block_ping=block_ping)
+        reporter = FakeReporter(
+            cleanup_order,
+            block_ping=block_ping,
+            ping_error=ping_error,
+        )
         network = FakeNetworkManager(
             cleanup_order,
             connected=connected,
@@ -454,8 +462,28 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await self.cancel_application(task)
 
         self.assertFalse(any(call[0] == "error" for call in display.calls))
-        self.assertEqual(led.states, ["connecting", "ready"])
+        self.assertEqual(led.states, ["connecting"])
         self.assertEqual(led.stop_calls, 1)
+        self.assertEqual(cleanup_order, ["display", "network"])
+
+    async def test_rejected_health_check_never_enters_ready_or_running(self):
+        from web.exceptions import ErrHttpStatus
+
+        failure = ErrHttpStatus(503)
+        app, display, _, _, led, cleanup_order = self.application(
+            connected=True,
+            ping_error=failure,
+        )
+
+        with self.assertRaises(ErrHttpStatus) as raised:
+            await app.run()
+
+        self.assertIs(raised.exception, failure)
+        self.assertFalse(app.state.updated.is_set())
+        self.assertEqual(led.states, ["connecting", "error"])
+        self.assertIn(("error", "Failed to reach API", 2), display.calls)
+        self.assertEqual(app.mode, "stopped")
+        self.assertIsNone(app._reporter_task)
         self.assertEqual(cleanup_order, ["display", "network"])
 
     async def test_connection_failure_changes_cyan_fade_to_solid_red(self):

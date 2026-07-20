@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from lib.async_channel import SingleValueChannel
-from web.exceptions import ErrTimedOut
+from web.exceptions import ErrHttpStatus, ErrTimedOut
 from web.reporter import Reporter
 
 
@@ -30,6 +30,7 @@ class OutcomeClient:
     def __init__(self, outcomes):
         self._outcomes = list(outcomes)
         self.calls = []
+        self.attempted = asyncio.Event()
         self.success = asyncio.Event()
 
     async def ping(self):
@@ -37,6 +38,7 @@ class OutcomeClient:
 
     async def report(self, payload):
         self.calls.append(payload)
+        self.attempted.set()
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
@@ -105,6 +107,31 @@ class ReporterTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(client.calls, ["failed-once"])
+        self.assertFalse(task.done())
+        await self._cancel(task)
+
+    async def test_backend_rejection_is_dropped_without_marking_transport_down(self):
+        client = OutcomeClient([ErrHttpStatus(503), 202])
+        transport_failed = asyncio.Event()
+        reporter = Reporter(
+            client,
+            SingleValueChannel(),
+            transport_failed.set,
+        )
+        task = asyncio.create_task(reporter.run())
+
+        await reporter.submit("rejected-once")
+        await asyncio.wait_for(client.attempted.wait(), timeout=0.25)
+        client.attempted.clear()
+        reporter.raise_if_failed()
+
+        self.assertFalse(transport_failed.is_set())
+        self.assertEqual(client.calls, ["rejected-once"])
+
+        await reporter.submit("next")
+        await asyncio.wait_for(client.success.wait(), timeout=0.25)
+
+        self.assertEqual(client.calls, ["rejected-once", "next"])
         self.assertFalse(task.done())
         await self._cancel(task)
 

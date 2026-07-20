@@ -6,6 +6,7 @@ Run this file directly from the host without copying it to the device:
 """
 
 import asyncio
+import sys
 
 
 async def return_value():
@@ -35,6 +36,16 @@ async def cancellable_worker(started):
             await asyncio.sleep_ms(100)
     finally:
         print("worker finally block executed")
+
+
+async def deadline_worker(started, cancelled):
+    started.set()
+    try:
+        while True:
+            await asyncio.sleep_ms(100)
+    except asyncio.CancelledError:
+        cancelled.set()
+        raise
 
 
 async def acquire_lock(lock, acquired):
@@ -132,6 +143,44 @@ async def main():
     await expect_cancelled(task, "Cancelled task did not raise CancelledError")
     print("PASS: awaiting cancelled task raises CancelledError")
 
+    print("Testing wait_for deadline expiry...")
+
+    deadline_started = asyncio.Event()
+    deadline_cancelled = asyncio.Event()
+    try:
+        await asyncio.wait_for(
+            deadline_worker(deadline_started, deadline_cancelled),
+            0.02,
+        )
+    except asyncio.TimeoutError:
+        pass
+    except asyncio.CancelledError:
+        raise AssertionError("wait_for timeout looked like external cancellation")
+    else:
+        raise AssertionError("wait_for did not enforce its finite timeout")
+
+    assert deadline_started.is_set()
+    assert deadline_cancelled.is_set()
+    print("PASS: wait_for timeout cancels its worker and raises TimeoutError")
+
+    print("Testing external cancellation around wait_for...")
+
+    external_started = asyncio.Event()
+    external_cancelled = asyncio.Event()
+    wrapped = asyncio.create_task(
+        asyncio.wait_for(
+            deadline_worker(external_started, external_cancelled),
+            10,
+        )
+    )
+    await external_started.wait()
+    await expect_cancelled(
+        wrapped,
+        "external cancellation around wait_for did not propagate",
+    )
+    assert external_cancelled.is_set()
+    print("PASS: external wait_for cancellation remains CancelledError")
+
     print("Testing Lock mutual exclusion...")
 
     lock = asyncio.Lock()
@@ -174,4 +223,6 @@ async def main():
     print("ALL ASYNCIO CONTRACT TESTS PASSED")
 
 
+print("Firmware implementation:", getattr(sys, "implementation", "unknown"))
+print("Firmware platform:", getattr(sys, "platform", "unknown"))
 asyncio.run(main())
