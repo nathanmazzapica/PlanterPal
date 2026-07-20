@@ -7,8 +7,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BH1750_PATH = PROJECT_ROOT / "lib" / "bh1750.py"
 LIGHT_PATH = PROJECT_ROOT / "sensors" / "light.py"
 STATE_PATH = PROJECT_ROOT / "app" / "state.py"
-MAIN_PATH = PROJECT_ROOT / "main.py"
+APPLICATION_PATH = PROJECT_ROOT / "app" / "application.py"
 CONFIG_PATH = PROJECT_ROOT / "config.py"
+DEVICE_HARDWARE_PATH = PROJECT_ROOT / "device_hardware.py"
 DISPLAY_PATH = PROJECT_ROOT / "display" / "display.py"
 
 
@@ -125,20 +126,20 @@ class AsyncArchitectureTests(unittest.TestCase):
                 }:
                     violations.append((path.name, node.lineno))
 
-        main_tree = parse(MAIN_PATH)
-        main_symbols = import_symbols(main_tree)
+        application_tree = parse(APPLICATION_PATH)
+        application_symbols = import_symbols(application_tree)
         sensor_terms = {"lux", "light", "monitor", "sample", "sensor", "state"}
-        for node in ast.walk(main_tree):
+        for node in ast.walk(application_tree):
             if not isinstance(node, ast.Call):
                 continue
-            if qualified_name(node.func, main_symbols) not in {
+            if qualified_name(node.func, application_symbols) not in {
                 "asyncio.create_task",
                 "uasyncio.create_task",
             }:
                 continue
-            target = qualified_name(node.args[0].func, main_symbols) if node.args and isinstance(node.args[0], ast.Call) else None
+            target = qualified_name(node.args[0].func, application_symbols) if node.args and isinstance(node.args[0], ast.Call) else None
             if target and any(term in target.lower() for term in sensor_terms):
-                violations.append((MAIN_PATH.name, node.lineno))
+                violations.append((APPLICATION_PATH.name, node.lineno))
 
         self.assertEqual(
             violations,
@@ -147,7 +148,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_composition_root_creates_and_injects_one_lock_for_sensor_bus(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         create_application = function_named(tree, "create_application")
         lock_bindings = set()
@@ -162,7 +163,7 @@ class AsyncArchitectureTests(unittest.TestCase):
 
         self.assertTrue(
             lock_bindings,
-            "create_application must create the lock for cfg.SENSOR_BUS",
+            "create_application must create the lock for the running sensor bus",
         )
 
         bus_calls = []
@@ -177,7 +178,7 @@ class AsyncArchitectureTests(unittest.TestCase):
             bus_values = [
                 value
                 for value in values
-                if qualified_name(value, symbols) == "config.SENSOR_BUS"
+                if qualified_name(value, symbols) == "device_hardware.SENSOR_BUS"
             ]
             if not bus_values:
                 continue
@@ -191,22 +192,22 @@ class AsyncArchitectureTests(unittest.TestCase):
             self.assertEqual(
                 len(injected),
                 1,
-                "every BH1750 using cfg.SENSOR_BUS must receive one composition-owned lock",
+                "every BH1750 using the running sensor bus must receive one composition-owned lock",
             )
             injected_lock_names.extend(injected)
 
         self.assertTrue(
             bus_calls,
-            "create_application must construct BH1750 for cfg.SENSOR_BUS",
+            "create_application must construct BH1750 for the running sensor bus",
         )
         self.assertEqual(
             len(set(injected_lock_names)),
             1,
-            "all BH1750 instances on cfg.SENSOR_BUS must share the same lock binding",
+            "all BH1750 instances on the running sensor bus must share the same lock binding",
         )
 
     def test_application_run_loop_awaits_state_update(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run_loop = function_named(tree, "_run_loop")
         awaited_state_updates = [
@@ -224,7 +225,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_application_submits_serialized_state_to_reporter(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run_loop = function_named(tree, "_run_loop")
         submissions = [
@@ -246,7 +247,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_reporting_cadence_condition_is_preserved(self):
-        run_loop = function_named(parse(MAIN_PATH), "_run_loop")
+        run_loop = function_named(parse(APPLICATION_PATH), "_run_loop")
         conditions = [
             node.test
             for node in ast.walk(run_loop)
@@ -266,7 +267,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_reporting_runs_as_one_application_owned_task(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run = function_named(tree, "run")
         reporter_tasks = []
@@ -288,7 +289,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_application_supervises_reporter_failures(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run_loop = function_named(tree, "_run_loop")
         checks = [
@@ -305,7 +306,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_every_sensor_bus_owner_receives_the_same_composition_lock(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         create_application = function_named(tree, "create_application")
         lock_bindings = set()
@@ -321,7 +322,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         self.assertEqual(
             len(lock_bindings),
             1,
-            "cfg.SENSOR_BUS must have exactly one composition-owned lock",
+            "the running sensor bus must have exactly one composition-owned lock",
         )
 
         injected = {}
@@ -333,7 +334,7 @@ class AsyncArchitectureTests(unittest.TestCase):
                 continue
             values = [*node.args, *(keyword.value for keyword in node.keywords)]
             if not any(
-                qualified_name(value, symbols) == "config.SENSOR_BUS"
+                qualified_name(value, symbols) == "device_hardware.SENSOR_BUS"
                 for value in values
             ):
                 continue
@@ -352,8 +353,30 @@ class AsyncArchitectureTests(unittest.TestCase):
             "BH1750 and Display must receive the exact same bus-lock binding",
         )
 
+    def test_config_is_side_effect_free_and_hardware_builds_running_devices(self):
+        config_tree = parse(CONFIG_PATH)
+        config_symbols = import_symbols(config_tree)
+        config_calls = [
+            qualified_name(node.func, config_symbols)
+            for node in ast.walk(config_tree)
+            if isinstance(node, ast.Call)
+        ]
+        self.assertNotIn("machine.Pin", config_calls)
+        self.assertNotIn("machine.I2C", config_calls)
+        self.assertNotIn("machine", set(import_symbols(config_tree).values()))
+
+        hardware_tree = parse(DEVICE_HARDWARE_PATH)
+        hardware_symbols = import_symbols(hardware_tree)
+        hardware_calls = {
+            qualified_name(node.func, hardware_symbols)
+            for node in ast.walk(hardware_tree)
+            if isinstance(node, ast.Call)
+        }
+        self.assertIn("machine.Pin", hardware_calls)
+        self.assertIn("machine.I2C", hardware_calls)
+
     def test_application_awaits_all_display_submissions(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         application = next(
             node
@@ -381,7 +404,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_display_render_receives_only_immutable_scalar_fields(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run_loop = function_named(tree, "_run_loop")
         calls = [
@@ -403,7 +426,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         )
 
     def test_application_owns_and_supervises_one_display_task(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
         run = function_named(tree, "run")
         run_loop = function_named(tree, "_run_loop")
@@ -429,7 +452,7 @@ class AsyncArchitectureTests(unittest.TestCase):
         self.assertEqual(len(failure_checks), 1)
 
     def test_expected_cancellation_bypasses_display_error_marquee(self):
-        tree = parse(MAIN_PATH)
+        tree = parse(APPLICATION_PATH)
         symbols = import_symbols(tree)
 
         for function_name in ("_connect_wifi", "_ping_server"):
@@ -448,12 +471,12 @@ class AsyncArchitectureTests(unittest.TestCase):
                 )
 
     def test_low_level_lcd_is_private_to_display_owner(self):
-        main_tree = parse(MAIN_PATH)
+        application_tree = parse(APPLICATION_PATH)
         display_tree = parse(DISPLAY_PATH)
 
-        main_imports = set(import_symbols(main_tree).values())
+        application_imports = set(import_symbols(application_tree).values())
         self.assertFalse(
-            main_imports.intersection(
+            application_imports.intersection(
                 {"lib.pcf8574.PCF8574", "lib.hd44780.HD44780", "lib.lcd.LCD"}
             )
         )

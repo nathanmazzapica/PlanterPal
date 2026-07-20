@@ -74,7 +74,7 @@ class WifiModuleHarness:
         self.network.STA_IF = object()
         self.network.WLAN = self._create_wlan
 
-        self.config = types.ModuleType("config")
+        self.config = types.ModuleType("web.network_config")
         self.config.WIFI_CONNECT_TIMEOUT_S = 0.01
         self.config.WIFI_POLL_INTERVAL_S = 0
         self.config.WIFI_MONITOR_INTERVAL_S = 0
@@ -93,11 +93,16 @@ class WifiModuleHarness:
     def import_module(self):
         old_modules = {
             name: sys.modules.get(name)
-            for name in ("network", "config", "web.wifi_config", "web.wifi")
+            for name in (
+                "network",
+                "web.network_config",
+                "web.wifi_config",
+                "web.wifi",
+            )
         }
 
         sys.modules["network"] = self.network
-        sys.modules["config"] = self.config
+        sys.modules["web.network_config"] = self.config
         sys.modules["web.wifi_config"] = self.wifi_config
         sys.modules.pop("web.wifi", None)
 

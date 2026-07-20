@@ -14,6 +14,7 @@ It temporarily replaces the LCD contents and takes one real lux reading.
 import asyncio
 
 import config as cfg
+import device_hardware as hardware
 from display.display import Display, LCD_ADDR
 from lib.async_channel import SingleValueChannel
 from lib.bh1750 import BH1750
@@ -83,7 +84,7 @@ async def assert_lock_reacquirable(lock):
 
 async def main():
     shared_lock = AuditedLock()
-    audited_bus = AuditedI2C(cfg.SENSOR_BUS, shared_lock)
+    audited_bus = AuditedI2C(hardware.SENSOR_BUS, shared_lock)
     display_channel = SingleValueChannel()
     display = Display(audited_bus, shared_lock, display_channel)
     light_sensor = BH1750(audited_bus, shared_lock)
