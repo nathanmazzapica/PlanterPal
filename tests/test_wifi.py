@@ -16,10 +16,17 @@ WIFI_MODULE_PATH = PROJECT_ROOT / "web" / "wifi.py"
 class FakeWLAN:
     """Small stateful stand-in for MicroPython's station WLAN."""
 
-    def __init__(self, connect_outcomes=(), connected=False, isconnected_error=None):
+    def __init__(
+        self,
+        connect_outcomes=(),
+        connected=False,
+        isconnected_error=None,
+        ifconfig_outcomes=(),
+    ):
         self._connect_outcomes = list(connect_outcomes)
         self._connected = connected
         self._isconnected_error = isconnected_error
+        self._ifconfig_outcomes = list(ifconfig_outcomes)
         self._attempt_in_progress = False
 
         self.active_calls = []
@@ -58,7 +65,14 @@ class FakeWLAN:
 
     def ifconfig(self):
         self.ifconfig_calls += 1
-        return ("192.0.2.2", "255.255.255.0", "192.0.2.1", "192.0.2.1")
+        outcome = (
+            self._ifconfig_outcomes.pop(0)
+            if self._ifconfig_outcomes
+            else ("192.0.2.2", "255.255.255.0", "192.0.2.1", "192.0.2.1")
+        )
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     def lose_connection(self):
         self._attempt_in_progress = False
@@ -198,6 +212,95 @@ class NetworkManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(manager.connected.is_set())
         await self._cancel(task)
 
+    async def test_candidate_ifconfig_oserror_is_a_typed_failed_attempt(self):
+        wlan = FakeWLAN(
+            connect_outcomes=(True,),
+            ifconfig_outcomes=(OSError("DHCP state unavailable"),),
+        )
+        manager = self.wifi.NetworkManager(wlan=wlan)
+        credentials = types.SimpleNamespace(ssid="garden", password="secret")
+
+        result = await manager.try_credentials(credentials)
+
+        self.assertEqual(
+            result,
+            self.wifi.ConnectionResult(
+                False,
+                self.wifi.ConnectionResult.CONNECT_FAILED,
+            ),
+        )
+        self.assertFalse(manager.is_connected())
+        self.assertIsNone(manager.failure)
+
+    async def test_monitor_ifconfig_oserror_recovers_without_task_restart(self):
+        wlan = FakeWLAN(
+            connect_outcomes=(True, True),
+            ifconfig_outcomes=(
+                ("192.0.2.2", "255.255.255.0", "192.0.2.1", "192.0.2.1"),
+                OSError("transient interface read"),
+                ("192.0.2.2", "255.255.255.0", "192.0.2.1", "192.0.2.1"),
+            ),
+        )
+        manager = self.wifi.NetworkManager("garden", "secret", wlan=wlan)
+        task = asyncio.create_task(manager.run())
+
+        for _ in range(100):
+            if len(wlan.connect_calls) >= 2 and manager.is_connected():
+                break
+            await asyncio.sleep(0)
+
+        self.assertEqual(len(wlan.connect_calls), 2)
+        self.assertTrue(manager.is_connected())
+        self.assertFalse(task.done())
+        self.assertIsNone(manager.failure)
+        await self._cancel(task)
+
+    async def test_success_does_not_repeat_ifconfig_for_logging(self):
+        wlan = FakeWLAN(connect_outcomes=(True,))
+        manager = self.wifi.NetworkManager(wlan=wlan)
+        credentials = types.SimpleNamespace(ssid="garden", password="secret")
+
+        result = await manager.try_credentials(credentials)
+
+        self.assertTrue(result.success)
+        self.assertEqual(wlan.ifconfig_calls, 1)
+        manager.disconnect()
+
+    async def test_repeated_ifconfig_errors_honor_bounded_backoff(self):
+        expected_delays = [0.01, 0.02, 0.02]
+        self.wifi.cfg.WIFI_RECONNECT_BACKOFF_S = (0.01, 0.02)
+        wlan = FakeWLAN(
+            connect_outcomes=(True, True, True),
+            ifconfig_outcomes=(
+                OSError("interface busy"),
+                OSError("interface busy"),
+                OSError("interface busy"),
+            ),
+        )
+        manager = self.wifi.NetworkManager("garden", "secret", wlan=wlan)
+        delays = []
+
+        class AsyncioProbe:
+            CancelledError = asyncio.CancelledError
+
+            @staticmethod
+            async def sleep(delay):
+                delays.append(delay)
+                if len(delays) == len(expected_delays):
+                    raise asyncio.CancelledError()
+
+        original_asyncio = self.wifi.asyncio
+        self.wifi.asyncio = AsyncioProbe
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await manager.run()
+        finally:
+            self.wifi.asyncio = original_asyncio
+
+        self.assertEqual(delays, expected_delays)
+        self.assertEqual(len(wlan.connect_calls), len(expected_delays))
+        self.assertFalse(manager.is_connected())
+
     async def test_cancellation_propagates_and_clears_connected(self):
         wlan = FakeWLAN(connect_outcomes=(True,))
         manager = self.wifi.NetworkManager("garden", "secret", wlan=wlan)
@@ -207,6 +310,22 @@ class NetworkManagerTests(unittest.IsolatedAsyncioTestCase):
         await self._cancel(task)
 
         self.assertFalse(manager.connected.is_set())
+
+    async def test_connection_observer_does_not_miss_a_pre_wait_transition(self):
+        wlan = FakeWLAN(connect_outcomes=(True,))
+        manager = self.wifi.NetworkManager("garden", "secret", wlan=wlan)
+        previous_version = manager.connection_version
+        task = asyncio.create_task(manager.run())
+
+        await asyncio.wait_for(manager.wait_until_connected(), timeout=0.25)
+        observed_version = await asyncio.wait_for(
+            manager.wait_for_connection_change(previous_version),
+            timeout=0.25,
+        )
+
+        self.assertGreater(observed_version, previous_version)
+        self.assertTrue(manager.is_connected())
+        await self._cancel(task)
 
     async def test_unexpected_failure_is_visible_to_run_waiter_and_raise(self):
         failure = RuntimeError("broken WLAN driver")

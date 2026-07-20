@@ -174,6 +174,8 @@ class FakeNetworkManager:
         self.has_credentials = True
         self.waiting = asyncio.Event()
         self.release_connection = asyncio.Event()
+        self.connection_version = 1 if connected else 0
+        self.state_changed = asyncio.Event()
 
     async def run(self):
         try:
@@ -188,6 +190,25 @@ class FakeNetworkManager:
             raise self.connection_error
         if not self.connected:
             await self.release_connection.wait()
+            self.transition(True)
+
+    def is_connected(self):
+        return self.connected
+
+    async def wait_for_connection_change(self, previous_version):
+        while self.connection_version == previous_version:
+            self.state_changed.clear()
+            if self.connection_version != previous_version:
+                break
+            await self.state_changed.wait()
+        return self.connection_version
+
+    def transition(self, connected):
+        if connected == self.connected:
+            return
+        self.connected = connected
+        self.connection_version += 1
+        self.state_changed.set()
 
     def raise_if_failed(self):
         pass
@@ -240,12 +261,17 @@ class FakeStateLed:
     def __init__(self):
         self.states = []
         self.stop_calls = 0
+        self.state = None
 
-    def set_state(self, state):
+    async def set_state(self, state):
+        if state == self.state:
+            return
+        self.state = state
         self.states.append(state)
 
     async def stop(self):
         self.stop_calls += 1
+        self.state = None
 
 
 class FakeDisplayProbe:
@@ -343,6 +369,7 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cleanup_order, ["display", "network"])
         self.assertIsNone(app._display_task)
         self.assertIsNone(app._network_task)
+        self.assertIsNone(app._network_led_task)
         self.assertIsNone(app._reporter_task)
 
     async def test_present_lcd_retains_configured_display(self):
@@ -449,7 +476,7 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await app.run()
 
         self.assertEqual(app._null_display_factory.instances, [])
-        self.assertEqual(cleanup_order, ["display", "network"])
+        self.assertEqual(cleanup_order, ["reporter", "display", "network"])
 
     async def test_cancellation_while_pinging_does_not_render_error(self):
         app, display, reporter, _, led, cleanup_order = self.application(
@@ -481,6 +508,8 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(raised.exception, failure)
         self.assertFalse(app.state.updated.is_set())
         self.assertEqual(led.states, ["connecting", "error"])
+        self.assertEqual(led.stop_calls, 0)
+        self.assertEqual(led.state, "error")
         self.assertIn(("error", "Failed to reach API", 2), display.calls)
         self.assertEqual(app.mode, "stopped")
         self.assertIsNone(app._reporter_task)
@@ -497,7 +526,8 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(("error", "Failed to connect to WiFi", 1), display.calls)
         self.assertEqual(led.states, ["connecting", "error"])
-        self.assertEqual(led.stop_calls, 1)
+        self.assertEqual(led.stop_calls, 0)
+        self.assertEqual(led.state, "error")
         self.assertEqual(cleanup_order, ["display", "network"])
 
     async def test_startup_messages_complete_before_first_reading_frame(self):
@@ -518,6 +548,48 @@ class ApplicationDisplayLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(led.states, ["connecting", "ready"])
 
         await self.cancel_application(task)
+        self.assertEqual(cleanup_order, ["reporter", "display", "network"])
+
+    async def test_network_loss_and_recovery_drive_cyan_then_green(self):
+        app, _, _, network, led, _ = self.application(connected=True)
+        task = asyncio.create_task(app.run())
+        await asyncio.wait_for(app.state.updated.wait(), timeout=0.25)
+
+        network.transition(False)
+        for _ in range(100):
+            if led.state == "connecting":
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(led.state, "connecting")
+
+        network.transition(True)
+        for _ in range(100):
+            if led.state == "ready":
+                break
+            await asyncio.sleep(0)
+        self.assertEqual(led.state, "ready")
+        self.assertEqual(
+            led.states,
+            ["connecting", "ready", "connecting", "ready"],
+        )
+
+        await self.cancel_application(task)
+        self.assertEqual(led.stop_calls, 1)
+        self.assertIsNone(led.state)
+
+    async def test_unexpected_runtime_failure_latches_red_without_stopping_led(self):
+        app, _, _, _, led, cleanup_order = self.application(
+            connected=True,
+            render_error=ValueError("broken reading frame"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "broken reading frame"):
+            await app.run()
+
+        self.assertEqual(led.states, ["connecting", "ready", "error"])
+        self.assertEqual(led.stop_calls, 0)
+        self.assertEqual(led.state, "error")
+        self.assertIsNone(app._network_led_task)
         self.assertEqual(cleanup_order, ["reporter", "display", "network"])
 
 
