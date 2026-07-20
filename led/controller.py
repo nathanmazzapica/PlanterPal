@@ -9,51 +9,71 @@ class Controller:
         self._state = None
         # Task running the current animation, if any.
         self._task = None
+        self._task_stopped = None
+        self._task_cancel_requested = False
+        self._transition_lock = asyncio.Lock()
 
     @property
     def state(self):
         return self._state
 
-    def set_state(self, state):
-        if state == self._state:
-            return
-        self._state = state
-        self._apply()
+    async def set_state(self, state):
+        """Set one device state after settling the previous animation."""
+
+        async with self._transition_lock:
+            if state == self._state:
+                return
+
+            await self._stop_animation()
+            self._state = state
+            self._apply()
 
     async def stop(self):
         """Stop the owned animation and leave the NeoPixel off."""
 
+        async with self._transition_lock:
+            try:
+                await self._stop_animation()
+            finally:
+                self._state = None
+                self._ws2811.off()
+
+    async def _stop_animation(self):
         task = self._task
-        if task is None and self._state is None:
+        if task is None:
             return
 
-        self._task = None
-        self._state = None
+        if not self._task_cancel_requested:
+            self._task_cancel_requested = True
+            task.cancel()
+        await self._task_stopped.wait()
 
+        if self._task is task:
+            self._task = None
+            self._task_stopped = None
+            self._task_cancel_requested = False
+
+    async def _run_animation(self, stopped):
         try:
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            await self._ws2811.blink()
         finally:
-            self._ws2811.off()
+            stopped.set()
+
+    def _start_animation(self):
+        stopped = asyncio.Event()
+        self._task_stopped = stopped
+        self._task_cancel_requested = False
+        self._task = asyncio.create_task(self._run_animation(stopped))
 
     def _apply(self):
-        # Stop any running animation before switching states.
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
-
         if self._state == "provisioning":
             # Fade in and out blue.
             self._ws2811.set_color(0, 0, 25)
-            self._task = asyncio.create_task(self._ws2811.blink())
+            self._start_animation()
         elif self._state == "connecting":
             # Fade in and out cyan while Wi-Fi is connecting.
             self._ws2811.set_color(0, 25, 25)
-            self._task = asyncio.create_task(self._ws2811.blink())
+            self._start_animation()
         elif self._state == "ready":
             # Solid green.
             self._ws2811.set_color(0, 25, 0)

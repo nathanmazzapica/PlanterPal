@@ -90,6 +90,7 @@ class NetworkManager:
 
         self.connected = asyncio.Event()
         self._state_changed = asyncio.Event()
+        self._connection_version = 0
         self._failure = None
         self._running = False
         self._connecting = False
@@ -121,19 +122,44 @@ class NetworkManager:
     def is_connected(self):
         return self.connected.is_set()
 
+    @property
+    def connection_version(self):
+        """Monotonic version for race-safe connection-state observation."""
+
+        return self._connection_version
+
     def raise_if_failed(self):
         if self._failure is not None:
             raise self._failure
 
     async def wait_until_connected(self):
+        version = self.connection_version
+
         while True:
             self.raise_if_failed()
 
             if self.is_connected():
                 return
 
-            await self._state_changed.wait()
+            version = await self.wait_for_connection_change(version)
+
+    async def wait_for_connection_change(self, previous_version):
+        """Wait until connected state changes from ``previous_version``.
+
+        The version closes the race between inspecting the current state and
+        beginning to wait on the shared Event. Consumers observe the latest
+        authoritative state; they do not mutate NetworkManager's Event.
+        """
+
+        while self.connection_version == previous_version:
+            self.raise_if_failed()
             self._state_changed.clear()
+            if self.connection_version != previous_version:
+                break
+            await self._state_changed.wait()
+
+        self.raise_if_failed()
+        return self.connection_version
 
     async def try_credentials(self, credentials, timeout_s=None):
         """Try one credential value without starting the reconnect loop.
@@ -217,11 +243,16 @@ class NetworkManager:
         try:
             while True:
                 try:
-                    wlan_connected = self._wlan.isconnected()
+                    has_working_connection = (
+                        self._wlan.isconnected() and self._has_valid_ip()
+                    )
                 except OSError:
-                    wlan_connected = False
+                    # Interface reads can fail transiently while the ESP32
+                    # driver changes state. Treat that sample as disconnected
+                    # and use the ordinary reconnect/backoff path.
+                    has_working_connection = False
 
-                if wlan_connected and self._has_valid_ip():
+                if has_working_connection:
                     self._set_connected()
                     backoff_index = 0
                     await asyncio.sleep(cfg.WIFI_MONITOR_INTERVAL_S)
@@ -359,12 +390,16 @@ class NetworkManager:
             return
 
         self.connected.set()
+        self._connection_version += 1
         self._state_changed.set()
-        print("\nnetwork config:", self._wlan.ifconfig())
+        # Do not perform another ifconfig() read for diagnostics: a logging
+        # failure must never determine connection lifecycle.
+        print("WiFi connected")
 
     def _set_disconnected(self):
         if not self.is_connected():
             return
 
         self.connected.clear()
+        self._connection_version += 1
         self._state_changed.set()

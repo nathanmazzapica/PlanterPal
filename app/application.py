@@ -44,6 +44,7 @@ class Application:
         self._null_display_factory = null_display_factory
 
         self._network_task = None
+        self._network_led_task = None
         self._reporter_task = None
         self._display_task = None
         self._mode = "stopped"
@@ -54,6 +55,7 @@ class Application:
 
     async def run(self):
         self._mode = "starting"
+        fatal_failure = False
 
         try:
             await self._start_display()
@@ -61,28 +63,46 @@ class Application:
             self._network_task = asyncio.create_task(self.network_manager.run())
             await self._connect_wifi()
             await self._ping_server()
-            self.state_led.set_state("ready")
+            await self.state_led.set_state("ready")
+            self._network_led_task = self._create_task(
+                self._coordinate_network_led()
+            )
             self._reporter_task = asyncio.create_task(self.reporter.run())
             self._mode = "running"
             await self._run_loop()
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            fatal_failure = True
+            raise
         finally:
             self._mode = "stopping"
             try:
-                await self._stop_reporter()
+                await self._stop_network_led()
             finally:
                 try:
-                    await self._stop_display()
+                    if fatal_failure:
+                        # Solid colors need no live task. Leave red latched in
+                        # the NeoPixel until the next reset makes a new choice.
+                        await self.state_led.set_state("error")
                 finally:
                     try:
-                        await self._stop_network_manager()
+                        await self._stop_reporter()
                     finally:
                         try:
-                            await self._stop_state_led()
+                            await self._stop_display()
                         finally:
                             try:
-                                hardware.STATUS_LED.off()
+                                await self._stop_network_manager()
                             finally:
-                                self._mode = "stopped"
+                                try:
+                                    if not fatal_failure:
+                                        await self._stop_state_led()
+                                finally:
+                                    try:
+                                        hardware.STATUS_LED.off()
+                                    finally:
+                                        self._mode = "stopped"
 
     async def _start_display(self):
         self.display = self._configured_display
@@ -111,7 +131,7 @@ class Application:
 
     async def _connect_wifi(self):
         try:
-            self.state_led.set_state("connecting")
+            await self.state_led.set_state("connecting")
             await self.display.write_line("connecting wifi", 0)
             await self.network_manager.wait_until_connected()
             await self.display.write_line("wifi connected", 0)
@@ -119,7 +139,6 @@ class Application:
             raise
         except Exception:
             await self.display.display_err("Failed to connect to WiFi", 1)
-            self.state_led.set_state("error")
             raise
 
     async def _ping_server(self):
@@ -132,8 +151,22 @@ class Application:
             raise
         except Exception:
             await self.display.display_err("Failed to reach API", 2)
-            self.state_led.set_state("error")
             raise
+
+    async def _coordinate_network_led(self):
+        """Translate owned NetworkManager state into Controller commands."""
+
+        version = self.network_manager.connection_version
+
+        while True:
+            if self.network_manager.is_connected():
+                await self.state_led.set_state("ready")
+            else:
+                await self.state_led.set_state("connecting")
+
+            version = await self.network_manager.wait_for_connection_change(
+                version
+            )
 
     async def _run_loop(self):
         tick = 0
@@ -166,6 +199,19 @@ class Application:
             pass
         finally:
             self._reporter_task = None
+
+    async def _stop_network_led(self):
+        if self._network_led_task is None:
+            return
+
+        self._network_led_task.cancel()
+
+        try:
+            await self._network_led_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._network_led_task = None
 
     async def _stop_display(self):
         if self._display_task is None:
