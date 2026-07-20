@@ -106,6 +106,16 @@ Preserve these rules when changing the firmware:
   the older one. Failed reports are intentionally discarded for now. Preserve
   the explicit comment acknowledging the unresolved final pre-rollover loss
   case until daily rollover is implemented.
+- Every HTTP request consumes one finite monotonic deadline from
+  `HTTP_REQUEST_TIMEOUT_S`; individual connection, drain, response, header, and
+  shutdown phases must not restart it. Expiry raises `ErrTimedOut`, closes the
+  writer best-effort, and must remain distinguishable from external task
+  cancellation.
+- `Client` accepts only `2xx` responses and raises `ErrHttpStatus` for backend
+  rejection without including bodies or payloads. `Reporter` drops a rejected
+  report once and continues, but does not mark the reachability GPIO offline;
+  only transport errors do. A rejected startup health check prevents the
+  NeoPixel from entering `"ready"`.
 - The monitors own their accumulating sensor state. `State.update()` is the
   application-level update boundary and copies a coherent snapshot for display
   and reporting.
@@ -140,7 +150,8 @@ Preserve these rules when changing the firmware:
 - `web/client.py` uses `asyncio.open_connection` for cooperative HTTP/1.1
   requests. It writes and drains through the stream API, reads the response
   status and headers asynchronously, and translates socket `OSError`s to the
-  typed exceptions in `web/exceptions.py`.
+  typed exceptions in `web/exceptions.py`. One shared request deadline covers
+  all awaited phases and successful responses are restricted to `2xx`.
 - `web/reporter.py` runs backend delivery as a separate consumer task.
 - `app/application.py` composes the running graph, creates the single shared I2C
   lock, starts and stops component tasks, and owns the main sensor/update loop.
@@ -180,6 +191,8 @@ mpremote connect <port> run tests/hardware/application_composition_hardware_prob
 Read each probe's header before running it. In particular:
 
 - deploy changed dependencies before a probe that imports from the device;
+- the asyncio contract probe verifies that firmware timeout expiry is distinct
+  from external cancellation and that both settle their owned worker;
 - the network probe expects the legacy `web/wifi_config.py` test credentials;
 - the BLE credential probe uses and cleans only its disposable `pp_probe` NVS
   namespace;

@@ -172,8 +172,11 @@ mpremote connect <port> fs cp display/probe.py :display/probe.py
 mpremote connect <port> fs cp led/provisioning_indicator.py :led/provisioning_indicator.py
 mpremote connect <port> fs cp lib/ble_bootstrap.py :lib/ble_bootstrap.py
 mpremote connect <port> fs cp lib/ble_provisioning.py :lib/ble_provisioning.py
+mpremote connect <port> fs cp web/client.py :web/client.py
 mpremote connect <port> fs cp web/credentials.py :web/credentials.py
+mpremote connect <port> fs cp web/exceptions.py :web/exceptions.py
 mpremote connect <port> fs cp web/network_config.py :web/network_config.py
+mpremote connect <port> fs cp web/reporter.py :web/reporter.py
 mpremote connect <port> fs cp web/wifi.py :web/wifi.py
 mpremote connect <port> run tests/hardware/reset_credentials_hardware.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
@@ -220,6 +223,23 @@ LCD selection is fixed for that running-mode boot. Power the board off before
 attaching or removing I2C devices, then boot again; live hot-plugging is not
 supported. Headless selection is a functional fallback, not a memory-saving
 mode, because the running application still imports the real display stack.
+
+#### Backend HTTP policy
+
+Each HTTP request has one monotonic 10-second deadline configured by
+`HTTP_REQUEST_TIMEOUT_S` in `config.py`. Connection establishment, request
+drain, response status and headers, and cooperative writer shutdown all consume
+that same budget; a new phase does not restart the timer. Deadline expiry
+closes the writer best-effort and raises typed `ErrTimedOut`, while external
+task cancellation remains `asyncio.CancelledError`.
+
+Both `/healthz` and `/api/v1/readings` accept only `2xx` responses. A `4xx` or
+`5xx` raises `ErrHttpStatus`, which records only the status code and never the
+response body or submitted payload. A rejected health check prevents running
+mode and turns the NeoPixel red. A rejected reading is discarded exactly once,
+like other failed deliveries, and the reporter remains available for the next
+single-slot payload. Because the server was reachable, rejection does not turn
+off the separate backend-reachability GPIO; transport failures and timeouts do.
 
 ## Architecture
 
