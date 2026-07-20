@@ -85,6 +85,14 @@ Preserve these rules when changing the firmware:
 - `Display` exclusively owns the LCD stack and serializes LCD commands through
   its task. Other components submit immutable values or direct critical
   commands; they do not write the LCD driver themselves.
+- `Application` selects exactly one display implementation per running-mode
+  boot. LCD presence is probed under the shared I2C lock. Address absence or an
+  initialization `OSError` selects `NullDisplay`; a scan failure, unexpected
+  initialization exception, or post-readiness display failure remains fatal.
+  The failed real task must be settled before the null task starts.
+- `NullDisplay` owns no hardware and performs no I2C access. It preserves the
+  display lifecycle and command interface so the rest of `Application` has no
+  headless conditionals.
 - `Controller` exclusively writes the running-mode NeoPixel. It owns and
   cancels its animation task. Current states are bare strings by design:
   `"connecting"` fades cyan, `"ready"` is solid green, and `"error"` is solid
@@ -126,6 +134,9 @@ Preserve these rules when changing the firmware:
   it for the read.
 - `display/display.py` runs as a sink task. Replaceable reading frames share a
   channel; startup/error line commands wait for confirmed completion.
+- `display/probe.py` performs the once-per-boot LCD address check under the
+  composition-owned I2C lock. `display/null_display.py` is the selected sink
+  when the optional debug LCD is absent or unavailable during initialization.
 - `web/client.py` uses `asyncio.open_connection` for cooperative HTTP/1.1
   requests. It writes and drains through the stream API, reads the response
   status and headers asynchronously, and translates socket `OSError`s to the
@@ -160,6 +171,7 @@ Hardware probes run directly from the host with the deployed device modules:
 ```sh
 mpremote connect <port> run tests/hardware/asyncio_contract_probe.py
 mpremote connect <port> run tests/hardware/display_hardware_probe.py
+mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
 mpremote connect <port> run tests/hardware/network_hardware_probe.py
 mpremote connect <port> run tests/hardware/ble_credentials_hardware_probe.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
@@ -174,6 +186,8 @@ Read each probe's header before running it. In particular:
 - the composition probe refuses persistence and preserves production
   credentials;
 - the display probe changes LCD contents and takes a real BH1750 reading.
+- the optional-display probe must be run in separate powered-off attachment
+  configurations; live I2C hot-plugging is unsupported.
 
 To deliberately clear production credentials:
 

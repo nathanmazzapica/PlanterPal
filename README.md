@@ -167,6 +167,8 @@ mpremote connect <port> fs cp app/provisioning.py :app/provisioning.py
 mpremote connect <port> fs cp app/application.py :app/application.py
 mpremote connect <port> fs cp config.py :config.py
 mpremote connect <port> fs cp device_hardware.py :device_hardware.py
+mpremote connect <port> fs cp display/null_display.py :display/null_display.py
+mpremote connect <port> fs cp display/probe.py :display/probe.py
 mpremote connect <port> fs cp led/provisioning_indicator.py :led/provisioning_indicator.py
 mpremote connect <port> fs cp lib/ble_bootstrap.py :lib/ble_bootstrap.py
 mpremote connect <port> fs cp lib/ble_provisioning.py :lib/ble_provisioning.py
@@ -175,9 +177,11 @@ mpremote connect <port> fs cp web/network_config.py :web/network_config.py
 mpremote connect <port> fs cp web/wifi.py :web/wifi.py
 mpremote connect <port> run tests/hardware/reset_credentials_hardware.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
+mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
 ```
 
-Only after both hardware scripts pass, install and reset the entry point:
+Only after the required hardware scripts pass, install and reset the entry
+point:
 
 ```sh
 mpremote connect <port> fs cp main.py :main.py
@@ -199,6 +203,23 @@ fallback for existing deployments. New deployments should use `API_HOST`.
 `device_hardware.py` constructs the GPIO and I2C objects only when the running
 application is imported; provisioning can therefore read `STATUS_LED_PIN`
 without initializing the debug LCD bus.
+
+#### Optional debug LCD
+
+Running mode checks for the LCD address once during each boot while holding the
+same I2C lock used by the display and BH1750. If the address is absent, the
+application selects a lifecycle-compatible `NullDisplay` and continues with
+Wi-Fi, sensing, reporting, and NeoPixel behavior unchanged. If the address is
+present but LCD initialization raises `OSError`, the failed display task is
+settled before the application continues headless. A failed I2C bus scan,
+unexpected initialization exception, or LCD failure after initialization
+remains fatal so a shared-bus or software fault is not mistaken for an absent
+debug accessory.
+
+LCD selection is fixed for that running-mode boot. Power the board off before
+attaching or removing I2C devices, then boot again; live hot-plugging is not
+supported. Headless selection is a functional fallback, not a memory-saving
+mode, because the running application still imports the real display stack.
 
 ## Architecture
 
