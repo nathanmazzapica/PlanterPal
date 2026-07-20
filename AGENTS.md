@@ -64,7 +64,10 @@ Preserve these rules when changing the firmware:
 - Only `NetworkManager` may activate, connect, disconnect, or otherwise mutate
   the station interface, its connection events, or its active in-memory
   credentials. Provisioning runtime may allocate the inactive WLAN handle but
-  may not operate it.
+  may not operate it. Transient station interface read failures enter the
+  ordinary reconnect/backoff path; successful state is published only after
+  association and a non-zero IP. Consumers observe the monotonic connection
+  version and never clear or set the owned connection Event directly.
 - BLE provisioning owns GATT transport and credential-request parsing. It
   submits credential candidates through the single-slot channel; it does not
   connect Wi-Fi or write NVS directly.
@@ -93,11 +96,15 @@ Preserve these rules when changing the firmware:
 - `NullDisplay` owns no hardware and performs no I2C access. It preserves the
   display lifecycle and command interface so the rest of `Application` has no
   headless conditionals.
-- `Controller` exclusively writes the running-mode NeoPixel. It owns and
-  cancels its animation task. Current states are bare strings by design:
+- `Controller` exclusively writes the running-mode NeoPixel. It owns its
+  animation task, cancelling and awaiting it before every transition. Current
+  states are bare strings by design:
   `"connecting"` fades cyan, `"ready"` is solid green, and `"error"` is solid
   red. The legacy `"provisioning"` blue fade remains supported but is not used
-  by the memory-constrained provisioning graph.
+  by the memory-constrained provisioning graph. `Application` observes network
+  state and requests LED transitions without mutating either owner. Deliberate
+  cancellation leaves the pixel off; fatal application failure leaves red
+  latched until reset or power cycle.
 - `ProvisioningIndicator` exclusively owns the separate GPIO2 LED while BLE is
   ready. It uses hardware PWM, is best-effort, and must be stopped/deinitialized
   on every cleanup path. Indicator failure must never block credential recovery.
@@ -184,6 +191,7 @@ mpremote connect <port> run tests/hardware/asyncio_contract_probe.py
 mpremote connect <port> run tests/hardware/display_hardware_probe.py
 mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
 mpremote connect <port> run tests/hardware/network_hardware_probe.py
+mpremote connect <port> run tests/hardware/network_led_hardware_probe.py
 mpremote connect <port> run tests/hardware/ble_credentials_hardware_probe.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
 ```
@@ -194,6 +202,9 @@ Read each probe's header before running it. In particular:
 - the asyncio contract probe verifies that firmware timeout expiry is distinct
   from external cancellation and that both settle their owned worker;
 - the network probe expects the legacy `web/wifi_config.py` test credentials;
+- the network/LED probe uses saved NVS credentials without changing them,
+  injects one transient interface-read failure, and visibly exercises
+  cyan-green-cyan-green-red before deliberate cleanup turns the pixel off;
 - the BLE credential probe uses and cleans only its disposable `pp_probe` NVS
   namespace;
 - the composition probe refuses persistence and preserves production

@@ -178,6 +178,7 @@ mpremote connect <port> fs cp web/exceptions.py :web/exceptions.py
 mpremote connect <port> fs cp web/network_config.py :web/network_config.py
 mpremote connect <port> fs cp web/reporter.py :web/reporter.py
 mpremote connect <port> fs cp web/wifi.py :web/wifi.py
+mpremote connect <port> run tests/hardware/network_led_hardware_probe.py
 mpremote connect <port> run tests/hardware/reset_credentials_hardware.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
 mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
@@ -240,6 +241,24 @@ mode and turns the NeoPixel red. A rejected reading is discarded exactly once,
 like other failed deliveries, and the reporter remains available for the next
 single-slot payload. Because the server was reachable, rejection does not turn
 off the separate backend-reachability GPIO; transport failures and timeouts do.
+
+#### Wi-Fi recovery and running LED policy
+
+`NetworkManager` treats transient `isconnected()` and `ifconfig()` `OSError`s
+as disconnected samples. Candidate IP-read failures become ordinary typed
+failed attempts, and the reconnect loop applies its configured bounded
+backoff; diagnostic logging never performs a second interface read. Consumers
+observe a monotonic connection-state version and cannot mutate the station or
+its connection event.
+
+During running mode, `Application` maps those authoritative transitions to the
+NeoPixel controller: cyan fade while initially connecting or reconnecting, and
+solid green while connected. Every controller transition cancels and awaits
+the prior animation before starting another. Deliberate application
+cancellation turns the pixel off. An unexpected fatal application failure
+settles any animation and leaves solid red latched until reset or power cycle;
+the next boot chooses its own state. The provisioning graph remains separate
+and continues to use only the GPIO2 PWM indicator.
 
 ## Architecture
 
