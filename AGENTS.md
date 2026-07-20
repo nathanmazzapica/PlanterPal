@@ -192,6 +192,7 @@ mpremote connect <port> run tests/hardware/display_hardware_probe.py
 mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
 mpremote connect <port> run tests/hardware/network_hardware_probe.py
 mpremote connect <port> run tests/hardware/network_led_hardware_probe.py
+mpremote connect <port> run tests/hardware/running_import_hardware_probe.py
 mpremote connect <port> run tests/hardware/ble_credentials_hardware_probe.py
 mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
 ```
@@ -205,6 +206,8 @@ Read each probe's header before running it. In particular:
 - the network/LED probe uses saved NVS credentials without changing them,
   injects one transient interface-read failure, and visibly exercises
   cyan-green-cyan-green-red before deliberate cleanup turns the pixel off;
+- the running-import probe composes the credentialed graph without starting
+  tasks or touching NVS and rejects any BLE/provisioning import leakage;
 - the BLE credential probe uses and cleans only its disposable `pp_probe` NVS
   namespace;
 - the composition probe refuses persistence and preserves production
@@ -237,24 +240,32 @@ security, and deployment details.
 The board normally enumerates as a CP2102 USB-UART bridge, for example
 `/dev/cu.usbserial-0001` on macOS. Find it with `mpremote devs`.
 
+`tools/deploy.py` is the canonical device manifest and deployment process. Its
+host tests enforce complete production-file coverage and local import closure.
+It verifies ESP32 MicroPython 1.28.0 or newer, installs/verifies `aioble`,
+creates directories, copies and verifies support files, and runs both
+mode-specific composition probes before copying `main.py` last. It must never
+include `boot.py`, gitignored `web/wifi_config.py`, tests, host tools, caches,
+logs, or secrets.
+
 ```sh
-# Copy a changed file; destination directories must already exist.
-mpremote connect <port> fs cp app/application.py :app/application.py
+# Validate the complete manifest without device writes.
+python3 tools/deploy.py --port <port> --dry-run
 
-# Chain several copies in one session.
-mpremote connect <port> fs cp config.py :config.py + fs cp web/wifi.py :web/wifi.py
+# Canonical incremental deployment.
+python3 tools/deploy.py --port <port>
 
-# Inspect the device filesystem.
+# Explicit clean-filesystem deployment; preserves boot.py, NVS, and firmware.
+python3 tools/deploy.py --port <port> --clean --yes
+
+# Inspect the device filesystem or open the REPL.
 mpremote connect <port> fs ls
-mpremote connect <port> fs cat :lib/ws2811b.py
-
-# Open the REPL.
 mpremote connect <port> repl
 ```
 
-Install supporting modules and verify their hardware probes before replacing
-`main.py`. Copy `main.py` last so an incomplete deployment cannot select a mode
-whose dependencies are missing. Do not copy or edit `boot.py`.
+Direct `mpremote fs cp` remains useful for a temporary single-file hardware
+experiment, but it is not evidence of a complete deployable graph. Use the
+canonical workflow before declaring a branch ready for clean-device use.
 
 Opening the CP2102 port can reset the board. Use the recovery period when raw
 REPL entry would otherwise hang:

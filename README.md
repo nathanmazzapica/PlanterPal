@@ -27,7 +27,9 @@ The I2C SCL pin is 27, and the SDA pin is 26. The EK1940 uses pin 32 for analog 
 ### Libraries
 This project uses [Thomascountz's HD44780 LCD Controller Interface](https://github.com/Thomascountz/micropython_i2c_lcd)
 
-BLE provisioning uses `aioble`. Install it on the device with:
+BLE provisioning uses `aioble`. The canonical deployment workflow below
+installs it when absent and verifies the import. For manual recovery or
+diagnostics, install it with:
 
 ```sh
 mpremote connect <port> mip install aioble
@@ -69,11 +71,13 @@ mpremote connect <port> sleep 1 fs ls
 mpremote connect <port> sleep 1 reset
 ```
 
-Before installing `main.py` on a freshly prepared board, copy the supporting
-modules and exercise the Wi-Fi-first, import-isolated provisioning composition:
+Before installing `main.py` on a freshly prepared board, use the canonical
+deployment workflow. Its provisioning probe exercises the Wi-Fi-first,
+import-isolated composition before the entry point is copied:
 
 ```sh
-mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
+python3 tools/deploy.py --port <port> --dry-run
+python3 tools/deploy.py --port <port>
 ```
 
 The provisioning runtime allocates one inactive station handle before reserving
@@ -150,55 +154,88 @@ For an open network, pass `--open`. If name-based discovery is ambiguous, pass
 The client prints `ready`, `testing`, and the terminal result but never prints
 the submitted password.
 
-### Migration test sequence
+### Canonical deployment
 
-Run the host suite first:
+`tools/deploy.py` is the single device-file manifest and deployment workflow.
+Do not maintain a second hand-written copy list. It requires MicroPython 1.28.0
+or newer on ESP32 and `mpremote` on the host.
+
+Run the host suite, then validate the manifest and inspect its ordered plan
+without contacting a device:
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tools/deploy.py --port <port> --dry-run
 ```
 
-Install `aioble`, then copy the supporting files to the board before copying
-`main.py`:
+Deploy incrementally and reset into the selected NVS mode:
 
 ```sh
-mpremote connect <port> fs cp app/provisioning_runtime.py :app/provisioning_runtime.py
-mpremote connect <port> fs cp app/provisioning.py :app/provisioning.py
-mpremote connect <port> fs cp app/application.py :app/application.py
-mpremote connect <port> fs cp config.py :config.py
-mpremote connect <port> fs cp device_hardware.py :device_hardware.py
-mpremote connect <port> fs cp display/null_display.py :display/null_display.py
-mpremote connect <port> fs cp display/probe.py :display/probe.py
-mpremote connect <port> fs cp led/provisioning_indicator.py :led/provisioning_indicator.py
-mpremote connect <port> fs cp lib/ble_bootstrap.py :lib/ble_bootstrap.py
-mpremote connect <port> fs cp lib/ble_provisioning.py :lib/ble_provisioning.py
-mpremote connect <port> fs cp web/client.py :web/client.py
-mpremote connect <port> fs cp web/credentials.py :web/credentials.py
-mpremote connect <port> fs cp web/exceptions.py :web/exceptions.py
-mpremote connect <port> fs cp web/network_config.py :web/network_config.py
-mpremote connect <port> fs cp web/reporter.py :web/reporter.py
-mpremote connect <port> fs cp web/wifi.py :web/wifi.py
-mpremote connect <port> run tests/hardware/network_led_hardware_probe.py
+python3 tools/deploy.py --port <port>
+```
+
+The workflow:
+
+1. validates that the explicit manifest covers every production Python file
+   and every local import;
+2. confirms ESP32 MicroPython 1.28.0 or newer;
+3. uses the five-second boot recovery window for every serial session and
+   removes the old `main.py` so an interrupted deployment remains recoverable;
+4. verifies the `aioble` package without importing or activating BLE, installing
+   it with `mpremote mip` only when absent;
+5. creates every destination directory and copies all support files;
+6. verifies deployed file sizes;
+7. performs a hard reset with `main.py` absent before each isolated
+   provisioning and credentialed-running hardware composition probe; the
+   provisioning probe performs the first functional `aioble` import after its
+   reset so NimBLE receives an unfragmented heap, and the running probe receives
+   a second hard reset plus a bounded settle period so no native BLE or serial
+   reset state crosses the mode boundary;
+8. copies and verifies `main.py` only after both probes pass, then resets.
+
+The manifest excludes tests, host tools, caches, logs, `web/wifi_config.py`,
+and `web/wifi_config.example.py`. It never copies, removes, or edits `boot.py`.
+Wi-Fi credentials remain owned by NVS and the backend hostname comes from
+`config.py`.
+
+For clean-filesystem acceptance, use the explicit destructive option and keep
+the board at the raw REPL after verification:
+
+```sh
+python3 tools/deploy.py \
+  --port <port> \
+  --clean --yes --no-reset
+```
+
+`--clean` removes PlanterPal-managed application files and complete managed
+package directories before rebuilding them from the manifest. It preserves
+`boot.py`, NVS, firmware, and unrelated external packages. The deployment
+still verifies both mutually exclusive import graphs before installing
+`main.py`.
+
+This clean workflow has been exercised on `ESP32_GENERIC` MicroPython 1.28.0:
+managed-file absence was verified before copying, the provisioning graph
+registered and advertised its BLE service, the separately reset credentialed
+graph composed without importing BLE, and the final checks confirmed both the
+manifest-sized `main.py` and the existing NVS credential record. No
+`web/wifi_config.py` was deployed.
+
+To validate both actual boot branches from that clean deployment, first clear
+credentials and reset into provisioning, then submit credentials through BLE:
+
+```sh
 mpremote connect <port> run tests/hardware/reset_credentials_hardware.py
-mpremote connect <port> run tests/hardware/application_composition_hardware_probe.py
-mpremote connect <port> run tests/hardware/optional_display_hardware_probe.py
-```
-
-Only after the required hardware scripts pass, install and reset the entry
-point:
-
-```sh
-mpremote connect <port> fs cp main.py :main.py
 mpremote connect <port> reset
 python3 tools/ble_provision_client.py --ssid "Garden WiFi"
 ```
 
-Expected result: while uncredentialed, the device slowly blinks GPIO2,
-advertises over BLE, tests one credential candidate at a time, persists only a
-connected candidate, acknowledges success, and resets. After the reset it stops advertising and runs
-the normal display/sensor/reporting application. A later Wi-Fi outage remains
-inside `NetworkManager`'s reconnect loop and does not initialize BLE or reset
-the machine.
+Expected result: the uncredentialed boot slowly blinks GPIO2, advertises as
+`PlanterPal`, verifies and persists the submitted credentials, acknowledges
+success, and resets. The next boot loads the separately probed credentialed
+running graph, does not import BLE, and begins networking, sensing, display or
+headless operation, reporting, and NeoPixel lifecycle indication. A later
+Wi-Fi outage stays inside `NetworkManager`; it neither exposes provisioning nor
+resets the machine.
 
 The legacy gitignored `web/wifi_config.py` is read only as a backend-host
 fallback for existing deployments. New deployments should use `API_HOST`.
